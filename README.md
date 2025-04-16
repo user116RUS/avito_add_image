@@ -1,0 +1,1 @@
+# avito_add_image
