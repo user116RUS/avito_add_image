@@ -1,0 +1,14 @@
+[Unit]
+Description=Avito Image Processing Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/avito_add_image
+ExecStart=/usr/bin/python3 /home/avito_add_image/daemon.py
+Restart=always
+RestartSec=300
+
+[Install]
+WantedBy=multi-user.target 
