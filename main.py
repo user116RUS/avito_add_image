@@ -713,7 +713,8 @@ def process_xml(use_gdrive_for_images=True):
     
     # Проверяем, существует ли уже файл Excel с данными
     existing_ids = set()
-    existing_products_with_missing_images = {}  # Словарь для хранения ID товаров без изображений
+    existing_products_with_missing_images = {}
+    existing_data = None
     
     if os.path.exists(OUTPUT_EXCEL_PATH):
         try:
@@ -746,6 +747,33 @@ def process_xml(use_gdrive_for_images=True):
     # Парсинг XML
     tree = ET.parse(LOCAL_XML_PATH)
     root = tree.getroot()
+    
+    # Получаем список ID товаров из XML
+    xml_ids = set()
+    for ad in root.findall("Ad"):
+        ad_id_elem = ad.find("Id")
+        if ad_id_elem is not None and ad_id_elem.text is not None:
+            xml_ids.add(ad_id_elem.text)
+    
+    # Проверяем, какие товары из Excel отсутствуют в XML
+    if existing_data is not None and len(existing_ids) > 0:
+        removed_ids = existing_ids - xml_ids
+        if removed_ids:
+            print(f"Найдено {len(removed_ids)} товаров, которые были удалены из XML:")
+            for removed_id in removed_ids:
+                print(f"- {removed_id}")
+            
+            # Удаляем строки с отсутствующими товарами
+            existing_data = existing_data[~existing_data['Id'].astype(str).isin(removed_ids)]
+            print(f"Удалено {len(removed_ids)} товаров из Excel-таблицы")
+            
+            # Сохраняем обновленную таблицу
+            existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
+            print(f"Обновленная таблица сохранена в {OUTPUT_EXCEL_PATH}")
+            
+            # Загружаем обновленную таблицу на Google Drive
+            file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+            print(f"Обновленная таблица загружена на Google Drive")
     
     # Ищем и удаляем нежелательный текст в описаниях
     print("Ищем и удаляем нежелательный текст в описаниях...")
