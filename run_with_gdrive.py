@@ -1,6 +1,12 @@
 import os
 from datetime import datetime
-from main import download_xml, process_xml_with_gdrive
+import sys
+from importlib.machinery import SourceFileLoader
+
+# Загружаем модуль main.py как отдельный модуль
+main_module = SourceFileLoader("main_module", "./main.py").load_module()
+download_xml = main_module.download_xml
+process_xml_with_gdrive = main_module.process_xml_with_gdrive
 
 def run_with_gdrive():
     """Запуск обработки XML с загрузкой изображений на Google Drive"""
