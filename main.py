@@ -15,13 +15,14 @@ import openpyxl
 from openpyxl.drawing.image import Image
 from pathlib import Path
 import uuid
+import sys
 
 # Конфигурация
-XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
-LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
-OUTPUT_EXCEL_PATH = "avito_processed.xlsx"
+XML_URL = "https://media.cm.expert/stock/export/cmexpert/avito.ru/all/all/d55d8ef7288a43a9824c95ca76ef7767.xml"
+LOCAL_XML_PATH = "avito_cmexpert.xml"
+OUTPUT_EXCEL_PATH = "avito_cmexpert_new.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 5 # Ограничение на количество обрабатываемых товаров
+MAX_ITEMS = 99999 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
@@ -689,10 +690,91 @@ def sync_excel_from_gdrive():
         traceback.print_exc()
         return False
 
+def update_brands_for_existing_products(xml_path, excel_path, product_ids):
+    """
+    Обновляет значения поля Brand для указанных товаров в Excel на основе данных из XML
+    
+    Args:
+        xml_path (str): Путь к XML-файлу
+        excel_path (str): Путь к Excel-файлу
+        product_ids (list): Список ID товаров для обновления
+        
+    Returns:
+        bool: True, если были сделаны изменения, иначе False
+    """
+    if not os.path.exists(xml_path) or not os.path.exists(excel_path):
+        print(f"Файл XML ({xml_path}) или Excel ({excel_path}) не найден")
+        return False
+        
+    try:
+        # Загружаем данные из Excel
+        df = pd.read_excel(excel_path)
+        
+        # Флаг для отслеживания изменений
+        changes_made = False
+        
+        # Парсим XML для получения актуальных значений брендов
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        
+        # Словарь для хранения актуальных значений брендов
+        brands_from_xml = {}
+        
+        # Собираем данные из XML
+        for ad in root.findall("Ad"):
+            ad_id_elem = ad.find("Id")
+            brand_elem = ad.find("Brand")
+            
+            # Проверяем наличие Id и Brand
+            if ad_id_elem is not None and ad_id_elem.text is not None and brand_elem is not None and brand_elem.text is not None:
+                ad_id = ad_id_elem.text
+                brand = brand_elem.text
+                
+                # Сохраняем только для указанных ID
+                if ad_id in product_ids:
+                    brands_from_xml[ad_id] = brand
+                    print(f"Из XML: товар {ad_id}, бренд: {brand}")
+        
+        # Обновляем значения в Excel
+        for product_id in product_ids:
+            if product_id in brands_from_xml:
+                # Ищем соответствующую строку в DataFrame
+                product_mask = df['Id'].astype(str) == product_id
+                if any(product_mask):
+                    # Получаем текущее значение бренда в Excel
+                    excel_brand = df.loc[product_mask, 'Brand'].iloc[0]
+                    xml_brand = brands_from_xml[product_id]
+                    
+                    # Если значения отличаются, обновляем
+                    if excel_brand != xml_brand:
+                        print(f"Обновление бренда для товара {product_id}: с '{excel_brand}' на '{xml_brand}'")
+                        df.loc[product_mask, 'Brand'] = xml_brand
+                        changes_made = True
+                    else:
+                        print(f"Бренд для товара {product_id} совпадает: '{excel_brand}'")
+                else:
+                    print(f"Товар {product_id} не найден в Excel")
+        
+        # Если были сделаны изменения, сохраняем обновленную таблицу
+        if changes_made:
+            df.to_excel(excel_path, index=False)
+            print(f"Сохранена обновленная таблица с исправленными брендами")
+            return True
+        else:
+            print("Нет необходимости в обновлении брендов")
+            return False
+            
+    except Exception as e:
+        print(f"Ошибка при обновлении брендов: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def process_xml(use_gdrive_for_images=True):
     """Обработка XML-файла и создание Excel-таблицы"""
-    # Синхронизация с Google Drive
-    sync_excel_from_gdrive()
+    # Синхронизация с Google Drive только если файл уже существует
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        sync_excel_from_gdrive()
     
     # Создание директории для изображений
     output_dir = create_output_dir()
@@ -710,6 +792,24 @@ def process_xml(use_gdrive_for_images=True):
         except Exception as e:
             print(f"Ошибка при инициализации Google Drive API: {e}")
             print("Изображения будут обработаны без загрузки на Google Drive.")
+    
+    # Проверяем, существует ли уже файл Excel и обновляем бренды для проблемных товаров
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        # Список ID товаров с несоответствиями в поле Brand
+        problematic_product_ids = ['bz143', 'bz149', 'bz150']
+        
+        # Вызываем функцию обновления брендов
+        update_result = update_brands_for_existing_products(
+            LOCAL_XML_PATH, 
+            OUTPUT_EXCEL_PATH, 
+            problematic_product_ids
+        )
+        
+        # Если были сделаны изменения, загружаем обновленную таблицу на Google Drive
+        if update_result:
+            print("Обновление брендов: загрузка обновленного Excel на Google Drive")
+            file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+            print(f"Таблица с обновленными брендами загружена на Google Drive: {file_url}")
     
     # Проверяем, существует ли уже файл Excel с данными
     existing_ids = set()
@@ -843,6 +943,12 @@ def process_xml(use_gdrive_for_images=True):
             
         ad_id = ad_id_elem.text
         
+        # Явная проверка и фиксация значения Brand для проблемных товаров
+        if ad_id in ['bz143', 'bz149', 'bz150']:
+            brand_elem = ad.find("Brand")
+            if brand_elem is not None and brand_elem.text:
+                print(f"Товар {ad_id} имеет бренд {brand_elem.text} в XML")
+        
         # Проверяем, является ли этот товар существующим товаром без изображений
         if ad_id in existing_products_with_missing_images:
             print(f"Товар {ad_id} уже существует в таблице, но не имеет изображений. Добавляем изображения.")
@@ -875,8 +981,8 @@ def process_xml(use_gdrive_for_images=True):
                         img_elem.set("url", img_url)
             continue
         
-        # Обрабатываем только товары начинающиеся с "bz" и с ограничением на количество
-        if not ad_id.startswith("bz") or processed_count >= MAX_ITEMS:
+        # Обрабатываем только с ограничением на количество
+        if processed_count >= MAX_ITEMS:
             continue
         
         # Пропускаем уже существующие товары (кроме тех, которые нуждаются в добавлении изображений)
@@ -980,7 +1086,7 @@ def process_xml(use_gdrive_for_images=True):
         
         # Добавляем наши кастомные значения
         row_data["InternetCalls"] = "Да"
-        row_data["CallsDevices"] = "3889715587"
+        row_data["CallsDevices"] = "6078268665"
         row_data["ImageUrls"] = image_urls_string
         
         data.append(row_data)
@@ -1154,6 +1260,93 @@ def add_image(product_id, image_url, output_dir=None, gdrive_service=None):
         print(f"Ошибка при добавлении изображения к товару {product_id}: {e}")
         return False
 
+def update_all_brands():
+    """
+    Обновляет все значения брендов в Excel-файле на основе данных из XML.
+    Эту функцию можно запустить отдельно для синхронизации.
+    """
+    print(f"Запуск обновления всех брендов: {datetime.now()}")
+    
+    # Проверяем наличие файлов
+    if not os.path.exists(LOCAL_XML_PATH) or not os.path.exists(OUTPUT_EXCEL_PATH):
+        print(f"Файл XML ({LOCAL_XML_PATH}) или Excel ({OUTPUT_EXCEL_PATH}) не найден")
+        return False
+    
+    try:
+        # Скачиваем последнюю версию XML
+        download_success = download_xml()
+        if not download_success:
+            print("Не удалось скачать XML, используем локальную копию")
+        
+        # Синхронизация с Google Drive
+        sync_excel_from_gdrive()
+        
+        # Загружаем данные из Excel
+        df = pd.read_excel(OUTPUT_EXCEL_PATH)
+        
+        # Флаг для отслеживания изменений
+        changes_made = False
+        
+        # Парсим XML для получения актуальных значений брендов
+        tree = ET.parse(LOCAL_XML_PATH)
+        root = tree.getroot()
+        
+        # Словарь для хранения актуальных значений брендов
+        brands_from_xml = {}
+        
+        # Собираем данные из XML
+        print("Сбор данных о брендах из XML...")
+        for ad in root.findall("Ad"):
+            ad_id_elem = ad.find("Id")
+            brand_elem = ad.find("Brand")
+            
+            # Проверяем наличие Id и Brand
+            if ad_id_elem is not None and ad_id_elem.text is not None and brand_elem is not None and brand_elem.text is not None:
+                ad_id = ad_id_elem.text
+                brand = brand_elem.text
+                
+                # Сохраняем бренд
+                brands_from_xml[ad_id] = brand
+        
+        print(f"Собрано {len(brands_from_xml)} брендов из XML")
+        
+        # Обновляем значения в Excel
+        updated_count = 0
+        for index, row in df.iterrows():
+            product_id = str(row['Id'])
+            
+            if product_id in brands_from_xml:
+                excel_brand = str(row['Brand']) if pd.notna(row['Brand']) else ""
+                xml_brand = brands_from_xml[product_id]
+                
+                # Если значения отличаются, обновляем
+                if excel_brand != xml_brand:
+                    print(f"Обновление бренда для товара {product_id}: с '{excel_brand}' на '{xml_brand}'")
+                    df.at[index, 'Brand'] = xml_brand
+                    changes_made = True
+                    updated_count += 1
+        
+        print(f"Всего обновлено брендов: {updated_count}")
+        
+        # Если были сделаны изменения, сохраняем обновленную таблицу
+        if changes_made:
+            df.to_excel(OUTPUT_EXCEL_PATH, index=False)
+            print(f"Сохранена обновленная таблица с исправленными брендами")
+            
+            # Загружаем на Google Drive
+            file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+            print(f"Таблица с обновленными брендами загружена на Google Drive: {file_url}")
+            return True
+        else:
+            print("Все бренды актуальны, обновление не требуется")
+            return False
+            
+    except Exception as e:
+        print(f"Ошибка при обновлении всех брендов: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def job():
     """Основная функция для запуска процесса обработки"""
     print(f"Начало обработки: {datetime.now()}")
@@ -1162,12 +1355,25 @@ def job():
     sync_excel_from_gdrive()
     
     if download_xml():
+        # Обновляем бренды для известных проблемных товаров
+        problematic_product_ids = ['bz143', 'bz149', 'bz150']
+        update_brands_for_existing_products(LOCAL_XML_PATH, OUTPUT_EXCEL_PATH, problematic_product_ids)
+        
+        # Основная обработка
         df, file_url = process_xml_with_gdrive()
         print(f"Ссылка на обработанный документ: {file_url}")
     print(f"Обработка завершена: {datetime.now()}")
 
 def main():
     """Основная функция для запуска скрипта"""
+    # Проверяем аргументы командной строки
+    if len(sys.argv) > 1 and sys.argv[1] == "--update-brands":
+        # Запускаем только обновление брендов
+        print("Запуск только обновления брендов")
+        update_all_brands()
+        return
+    
+    # Стандартный запуск
     # Сначала запускаем обработку однократно
     job()
     

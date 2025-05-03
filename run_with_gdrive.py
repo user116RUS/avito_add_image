@@ -16,6 +16,14 @@ def run_with_gdrive():
         print("Ошибка: Файл google_cred.json с учетными данными не найден.")
         return False
     
+    # Удаляем старый файл Excel, если он существует, чтобы создать новый
+    if os.path.exists(main_module.OUTPUT_EXCEL_PATH):
+        try:
+            os.remove(main_module.OUTPUT_EXCEL_PATH)
+            print(f"Удален старый файл {main_module.OUTPUT_EXCEL_PATH} для создания нового")
+        except Exception as e:
+            print(f"Не удалось удалить старый файл: {e}")
+    
     # Загружаем XML-файл
     if download_xml():
         # Обрабатываем XML с загрузкой изображений на Google Drive
