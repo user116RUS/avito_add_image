@@ -334,8 +334,8 @@ def upload_image_to_gdrive(drive_service, file_path, max_retries=3, retry_delay=
     return None
 
 def process_images(ad_element, output_dir, ad_id, gdrive_service=None, shop_image_path=None):
-    """Обработка изображений для объявления"""
-    print(f"Запуск process_images для {ad_id}, gdrive_service: {'Инициализирован' if gdrive_service else 'None'}")
+    """Сбор исходных ссылок на изображения без обработки и загрузки на Google Drive"""
+    print(f"Сбор ссылок на изображения для {ad_id}")
     
     # Попробуем получить изображения различными способами
     images = ad_element.findall(".//Image")
@@ -353,35 +353,24 @@ def process_images(ad_element, output_dir, ad_id, gdrive_service=None, shop_imag
         
         # Попробуем получить изображения напрямую из атрибутов url
         try:
-            # Распечатаем содержимое элемента для отладки
-            print(f"Содержимое элемента ad для {ad_id}:")
-            for elem in ad_element:
-                print(f"  - {elem.tag}: {elem.text if elem.text else 'None'}")
-            
             # Проверим, есть ли элемент Images и что в нем
             images_section = ad_element.find("Images")
             if images_section is not None:
                 print(f"Содержимое секции Images для {ad_id}:")
                 for child in images_section:
-                    print(f"  - {child.tag}: {child.text if child.text else 'None'}, атрибуты: {child.attrib}")
                     if 'url' in child.attrib:
                         # Создаем список URL из атрибутов
                         original_urls = [child.attrib['url'] for child in images_section if 'url' in child.attrib]
                         print(f"Найдены URL изображений через атрибуты: {original_urls}")
-                        
-                        # Обработка изображений по найденным URL
-                        return process_image_urls(original_urls, output_dir, ad_id, gdrive_service, shop_image_path)
+                        return original_urls
         except Exception as e:
             print(f"Ошибка при поиске изображений в атрибутах: {e}")
             import traceback
             traceback.print_exc()
         
         return []  # Нет изображений для обработки
-
-    os.makedirs(output_dir, exist_ok=True)
     
     original_urls = []  # Список исходных URL изображений
-    processed_urls = []  # Список URL обработанных изображений
 
     # Сбор всех URL изображений
     for i, img in enumerate(images):
@@ -395,9 +384,8 @@ def process_images(ad_element, output_dir, ad_id, gdrive_service=None, shop_imag
         if img_url:
             original_urls.append(img_url)
     
-    print(f"Найдено {len(original_urls)} изображений для {ad_id}: {original_urls}")
-    
-    return process_image_urls(original_urls, output_dir, ad_id, gdrive_service, shop_image_path)
+    print(f"Найдено {len(original_urls)} изображений для {ad_id}")
+    return original_urls
 
 def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, shop_image_path=None):
     """Обработка URL изображений для объявления"""
@@ -779,19 +767,8 @@ def process_xml(use_gdrive_for_images=True):
     # Создание директории для изображений
     output_dir = create_output_dir()
     
-    # Инициализация Google Drive API для изображений
+    # Инициализация Google Drive API больше не требуется
     gdrive_service = None
-    if use_gdrive_for_images:
-        try:
-            credentials = service_account.Credentials.from_service_account_file(
-                GOOGLE_CRED_PATH, 
-                scopes=['https://www.googleapis.com/auth/drive']
-            )
-            gdrive_service = build('drive', 'v3', credentials=credentials)
-            print("Google Drive API инициализирован для загрузки изображений.")
-        except Exception as e:
-            print(f"Ошибка при инициализации Google Drive API: {e}")
-            print("Изображения будут обработаны без загрузки на Google Drive.")
     
     # Проверяем, существует ли уже файл Excel и обновляем бренды для проблемных товаров
     if os.path.exists(OUTPUT_EXCEL_PATH):
@@ -826,21 +803,6 @@ def process_xml(use_gdrive_for_images=True):
                 # Получаем список существующих Id
                 existing_ids = set(existing_data['Id'].astype(str).tolist())
                 print(f"Найдено {len(existing_ids)} существующих товаров")
-                
-                # Проверяем наличие изображений в существующих товарах
-                if 'ImageUrls' in existing_data.columns:
-                    for index, row in existing_data.iterrows():
-                        product_id = str(row['Id'])
-                        image_urls = str(row['ImageUrls']) if pd.notna(row['ImageUrls']) else ""
-                        
-                        # Если у товара нет изображений, добавляем его в список для обработки
-                        if not image_urls or image_urls == "nan" or image_urls.strip() == "":
-                            existing_products_with_missing_images[product_id] = index
-                    
-                    if existing_products_with_missing_images:
-                        print(f"Найдено {len(existing_products_with_missing_images)} существующих товаров без изображений")
-                    else:
-                        print("Все существующие товары имеют изображения")
         except Exception as e:
             print(f"Ошибка при чтении существующего Excel-файла: {e}")
     
@@ -927,7 +889,6 @@ def process_xml(use_gdrive_for_images=True):
     
     # Данные для таблицы
     data = []
-    processed_images_dict = {}  # Словарь для хранения путей к обработанным изображениям
     
     # Счетчик обработанных товаров
     processed_count = 0
@@ -949,46 +910,14 @@ def process_xml(use_gdrive_for_images=True):
             if brand_elem is not None and brand_elem.text:
                 print(f"Товар {ad_id} имеет бренд {brand_elem.text} в XML")
         
-        # Проверяем, является ли этот товар существующим товаром без изображений
-        if ad_id in existing_products_with_missing_images:
-            print(f"Товар {ad_id} уже существует в таблице, но не имеет изображений. Добавляем изображения.")
-            # Обработка изображений
-            processed_images = process_images(ad, output_dir, ad_id, gdrive_service)
-            if processed_images:
-                # Формируем строку со всеми URL изображений, разделенными |
-                image_urls_string = "|".join(processed_images)
-                
-                # Обновляем запись в существующем DataFrame
-                row_index = existing_products_with_missing_images[ad_id]
-                existing_data.at[row_index, 'ImageUrls'] = image_urls_string
-                print(f"Добавлены изображения для товара {ad_id}")
-                
-                # Если есть секция Images, заменяем её в XML
-                images_element = ad.find("Images")
-                if images_element is not None:
-                    # Удаляем существующие изображения
-                    for img in images_element.findall("Image"):
-                        images_element.remove(img)
-                        
-                    # Добавляем новые изображения в XML
-                    for i, img_path in enumerate(processed_images):
-                        # Получаем соответствующий URL
-                        img_url = img_path if isinstance(img_path, str) else img_path[0]
-                        
-                        # Создаём элемент для XML
-                        img_elem = ET.SubElement(images_element, "Image")
-                        img_elem.text = img_url
-                        img_elem.set("url", img_url)
-            continue
-        
-        # Обрабатываем только с ограничением на количество
-        if processed_count >= MAX_ITEMS:
-            continue
-        
-        # Пропускаем уже существующие товары (кроме тех, которые нуждаются в добавлении изображений)
-        if ad_id in existing_ids and ad_id not in existing_products_with_missing_images:
+        # Пропускаем уже существующие товары
+        if ad_id in existing_ids:
             skipped_count += 1
             print(f"Пропуск объявления {ad_id} (уже существует в таблице)")
+            continue
+            
+        # Обрабатываем только с ограничением на количество
+        if processed_count >= MAX_ITEMS:
             continue
             
         processed_count += 1
@@ -1042,30 +971,11 @@ def process_xml(use_gdrive_for_images=True):
                     # Если нет "Lada;", добавляем в конец
                     description.text = description.text + NEW_DESCRIPTION
         
-        # Обработка изображений
-        processed_images = process_images(ad, output_dir, ad_id, gdrive_service)
-        processed_images_dict[ad_id] = processed_images
-        
-        # Если есть секция Images, заменяем её в XML
-        if processed_images:
-            images_element = ad.find("Images")
-            if images_element is not None:
-                # Удаляем существующие изображения
-                for img in images_element.findall("Image"):
-                    images_element.remove(img)
-                    
-                # Добавляем новые изображения в XML
-                for i, img_path in enumerate(processed_images):
-                    # Получаем соответствующий URL
-                    img_url = img_path if isinstance(img_path, str) else img_path[0]
-                    
-                    # Создаём элемент для XML
-                    img_elem = ET.SubElement(images_element, "Image")
-                    img_elem.text = img_url
-                    img_elem.set("url", img_url)
+        # Сбор исходных URL изображений (без обработки)
+        original_image_urls = process_images(ad, output_dir, ad_id)
         
         # Формируем строку со всеми URL изображений, разделенными |
-        image_urls_string = "|".join(processed_images)
+        image_urls_string = "|".join(original_image_urls)
         
         # Собираем данные для Excel
         row_data = {
@@ -1095,19 +1005,6 @@ def process_xml(use_gdrive_for_images=True):
     output_xml_path = "avito_processed.xml"
     tree.write(output_xml_path, encoding="utf-8", xml_declaration=True)
     print(f"Обработанный XML сохранен: {output_xml_path}")
-    
-    # Проверяем, были ли обновлены существующие товары с отсутствующими изображениями
-    if existing_products_with_missing_images and os.path.exists(OUTPUT_EXCEL_PATH):
-        # Сохраняем обновленный DataFrame с добавленными изображениями
-        existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
-        print(f"Обновлен Excel-файл с добавленными изображениями для {len(existing_products_with_missing_images)} товаров")
-        
-        # Загружаем файл на Google Drive
-        file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
-        print(f"Обновленная таблица загружена на Google Drive")
-        
-        if not data:  # Если нет новых товаров для добавления
-            return pd.DataFrame(), file_url
     
     if not data:
         print("Нет новых товаров для добавления")
@@ -1159,7 +1056,7 @@ def process_xml(use_gdrive_for_images=True):
             print(f"Внимание: Столбец '{param}' отсутствует в DataFrame! Добавляем его...")
             df[param] = ""  # Добавляем пустой столбец
     
-    # Создаем Excel-файл без вставки изображений, только ссылки
+    # Создаем Excel-файл
     excel_path, was_updated = save_to_excel(df)
     
     # Загружаем файл на Google Drive только если он был обновлен
