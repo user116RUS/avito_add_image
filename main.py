@@ -22,7 +22,7 @@ XML_URL = "https://media.cm.expert/stock/export/cmexpert/avito.ru/all/all/d55d8e
 LOCAL_XML_PATH = "avito_cmexpert.xml"
 OUTPUT_EXCEL_PATH = "avito_cmexpert_new.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999 # Ограничиваем для демонстрации
+MAX_ITEMS = 10 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
@@ -37,7 +37,9 @@ OVERLAY_IMAGES = [
     "images/1.png",
     "images/2.png",
     "images/3.png",
-    "images/4.png"
+    "images/4.png",
+    "images/5.png",
+    "images/6.png"
 ]
 
 # Путь к изображению для наложения водяного знака
@@ -139,8 +141,8 @@ def overlay_image(base_image_url, overlay_path, output_path):
         # Горизонтально центрируем, а вертикально смещаем вниз
         paste_x = (base_width - new_overlay_width) // 2
         
-        # Минимальный отступ от нижнего края - всего 2% высоты
-        bottom_margin = int(base_height * 0.02)  # 2% от высоты для минимального отступа снизу
+        # Минимальный отступ от нижнего края - ставим 0 для максимального опускания вниз
+        bottom_margin = 0  # Отступ от нижнего края отсутствует
         paste_y = base_height - new_overlay_height - bottom_margin
         
         # Проверка, чтобы изображение не вышло за пределы
@@ -767,8 +769,23 @@ def process_xml(use_gdrive_for_images=True):
     # Создание директории для изображений
     output_dir = create_output_dir()
     
-    # Инициализация Google Drive API больше не требуется
+    # Инициализация Google Drive API, если нужно
     gdrive_service = None
+    if use_gdrive_for_images and os.path.exists(GOOGLE_CRED_PATH):
+        try:
+            # Аутентификация с помощью сервисного аккаунта
+            credentials = service_account.Credentials.from_service_account_file(
+                GOOGLE_CRED_PATH, 
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            
+            # Создание сервиса Drive API
+            gdrive_service = build('drive', 'v3', credentials=credentials)
+            print("Google Drive API успешно инициализирован")
+        except Exception as e:
+            print(f"Ошибка при инициализации Google Drive API: {e}")
+            import traceback
+            traceback.print_exc()
     
     # Проверяем, существует ли уже файл Excel и обновляем бренды для проблемных товаров
     if os.path.exists(OUTPUT_EXCEL_PATH):
@@ -972,10 +989,13 @@ def process_xml(use_gdrive_for_images=True):
                     description.text = description.text + NEW_DESCRIPTION
         
         # Сбор исходных URL изображений (без обработки)
-        original_image_urls = process_images(ad, output_dir, ad_id)
+        original_image_urls = process_images(ad, output_dir, ad_id, gdrive_service)
+        
+        # Обработка изображений и получение URL обработанных изображений
+        processed_image_urls = process_image_urls(original_image_urls, output_dir, ad_id, gdrive_service)
         
         # Формируем строку со всеми URL изображений, разделенными |
-        image_urls_string = "|".join(original_image_urls)
+        image_urls_string = "|".join(processed_image_urls) if processed_image_urls else "|".join(original_image_urls)
         
         # Собираем данные для Excel
         row_data = {
