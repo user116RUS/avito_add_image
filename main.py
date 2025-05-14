@@ -21,7 +21,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
 OUTPUT_EXCEL_PATH = "avito_processed.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 5 # Ограничиваем для демонстрации
+MAX_ITEMS = 99999 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
