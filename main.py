@@ -21,7 +21,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
 OUTPUT_EXCEL_PATH = "avito_processed.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 5 # Ограничение на количество обрабатываемых товаров
+MAX_ITEMS = 5 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
@@ -138,8 +138,8 @@ def overlay_image(base_image_url, overlay_path, output_path):
         # Горизонтально центрируем, а вертикально смещаем вниз
         paste_x = (base_width - new_overlay_width) // 2
         
-        # Минимальный отступ от нижнего края - всего 2% высоты
-        bottom_margin = int(base_height * 0.02)  # 2% от высоты для минимального отступа снизу
+        # Минимальный отступ от нижнего края - всего 0.5% высоты (уменьшено с 2%)
+        bottom_margin = int(base_height * 0.005)  # 0.5% от высоты для минимального отступа снизу
         paste_y = base_height - new_overlay_height - bottom_margin
         
         # Проверка, чтобы изображение не вышло за пределы
@@ -418,7 +418,7 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
         if i == 0 and shop_image_path and os.path.exists(shop_image_path):
             print(f"Добавление изображения магазина к первому изображению для объявления {ad_id}")
             result_path = add_shop_image(img_url, shop_image_path, output_path)
-        else:
+        elif i < 4:  # Накладываем водяной знак только на первые 4 изображения
             # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
             # Используем остаток от деления на длину списка, чтобы не выйти за границы
             overlay_index = i % len(OVERLAY_IMAGES)
@@ -426,6 +426,21 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
             print(f"Используем overlay {overlay_path} для изображения {i+1} объявления {ad_id}")
             
             result_path = overlay_image(img_url, overlay_path, output_path)
+        else:
+            # Для остальных изображений просто сохраняем без водяного знака
+            try:
+                print(f"Сохраняем изображение {i+1} без водяного знака для объявления {ad_id}")
+                response = requests.get(img_url)
+                if response.status_code == 200:
+                    with open(output_path, 'wb') as f:
+                        f.write(response.content)
+                    result_path = output_path
+                else:
+                    print(f"Ошибка загрузки изображения {img_url}, код: {response.status_code}")
+                    result_path = None
+            except Exception as e:
+                print(f"Ошибка при сохранении изображения без водяного знака: {e}")
+                result_path = None
         
         if result_path:
             # Загрузка в Google Drive, если сервис предоставлен
