@@ -401,17 +401,17 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
         if not img_url:
             continue
 
-        # Определение пути сохранения
-        output_filename = f"{ad_id}_{i+1}.jpg"
-        output_path = os.path.join(output_dir, output_filename)
+        # Первые 6 изображений обрабатываем и загружаем на Google Drive
+        if i < 6:
+            # Определение пути сохранения
+            output_filename = f"{ad_id}_{i+1}.jpg"
+            output_path = os.path.join(output_dir, output_filename)
 
-        # Определяем, нужно ли использовать add_shop_image для первого изображения
-        if i == 0 and shop_image_path and os.path.exists(shop_image_path):
-            print(f"Добавление изображения магазина к первому изображению для объявления {ad_id}")
-            result_path = add_shop_image(img_url, shop_image_path, output_path)
-        else:
-            # Накладываем водяной знак только на первые 6 изображений
-            if i < 6:
+            # Определяем, нужно ли использовать add_shop_image для первого изображения
+            if i == 0 and shop_image_path and os.path.exists(shop_image_path):
+                print(f"Добавление изображения магазина к первому изображению для объявления {ad_id}")
+                result_path = add_shop_image(img_url, shop_image_path, output_path)
+            else:
                 # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
                 # Используем остаток от деления на длину списка, чтобы не выйти за границы
                 overlay_index = i % len(OVERLAY_IMAGES)
@@ -419,48 +419,34 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
                 print(f"Используем overlay {overlay_path} для изображения {i+1} объявления {ad_id}")
                 
                 result_path = overlay_image(img_url, overlay_path, output_path)
-            else:
-                # Для остальных изображений просто сохраняем без наложения водяного знака
-                try:
-                    # Загрузка изображения
-                    response = requests.get(img_url)
-                    if response.status_code != 200:
-                        print(f"Ошибка загрузки изображения {img_url}, код: {response.status_code}")
-                        continue
-                        
-                    img = PILImage.open(BytesIO(response.content)).convert("RGB")
-                    img.save(output_path)
-                    result_path = output_path
-                    print(f"Изображение {i+1} сохранено без водяного знака для объявления {ad_id}")
-                except Exception as e:
-                    print(f"Ошибка при сохранении изображения без водяного знака: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-        
-        if result_path:
-            # Загрузка в Google Drive, если сервис предоставлен
-            if gdrive_service:
-                try:
-                    print(f"Начинаем загрузку изображения {output_filename} на Google Drive")
-                    file_url = upload_image_to_gdrive(gdrive_service, result_path)
-                    if file_url:
-                        processed_urls.append(file_url)
-                        print(f"Изображение {output_filename} загружено в Google Drive: {file_url}")
-                    else:
-                        print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
-                        # В случае ошибки загружаем локальный путь как запасной вариант
+            
+            if result_path:
+                # Загрузка в Google Drive, если сервис предоставлен
+                if gdrive_service:
+                    try:
+                        print(f"Начинаем загрузку изображения {output_filename} на Google Drive")
+                        file_url = upload_image_to_gdrive(gdrive_service, result_path)
+                        if file_url:
+                            processed_urls.append(file_url)
+                            print(f"Изображение {output_filename} загружено в Google Drive: {file_url}")
+                        else:
+                            print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
+                            # В случае ошибки загружаем локальный путь как запасной вариант
+                            processed_urls.append(output_path)
+                    except Exception as e:
+                        print(f"Исключение при загрузке в Google Drive: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # В случае исключения загружаем локальный путь
                         processed_urls.append(output_path)
-                except Exception as e:
-                    print(f"Исключение при загрузке в Google Drive: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # В случае исключения загружаем локальный путь
+                else:
+                    # Если Google Drive не используется, сохраняем локальный путь
                     processed_urls.append(output_path)
-            else:
-                # Если Google Drive не используется, сохраняем локальный путь
-                processed_urls.append(output_path)
-                print(f"Google Drive не используется, сохранен локальный путь: {output_path}")
+                    print(f"Google Drive не используется, сохранен локальный путь: {output_path}")
+        else:
+            # Для изображений после 6-го сохраняем исходный URL без обработки
+            processed_urls.append(img_url)
+            print(f"Изображение {i+1} для объявления {ad_id} сохранено с исходным URL без обработки: {img_url}")
     
     # Добавляем изображения магазина, если осталось место (максимум 10 изображений)
     remaining_slots = 10 - len(processed_urls)
@@ -1301,14 +1287,120 @@ def job():
         print(f"Ссылка на обработанный документ: {file_url}")
     print(f"Обработка завершена: {datetime.now()}")
 
+def check_gdrive_storage():
+    """
+    Проверяет свободное место на Google Диске и возвращает информацию о квоте хранилища
+    
+    Returns:
+        dict: Словарь с информацией о хранилище или None в случае ошибки
+    """
+    try:
+        # Проверка наличия учетных данных
+        if not os.path.exists(GOOGLE_CRED_PATH):
+            print("Файл с учетными данными Google API не найден")
+            return None
+            
+        # Аутентификация с помощью сервисного аккаунта
+        credentials = service_account.Credentials.from_service_account_file(
+            GOOGLE_CRED_PATH, 
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        
+        # Создание сервиса Drive API
+        drive_service = build('drive', 'v3', credentials=credentials)
+        
+        # Получение информации о хранилище
+        about = drive_service.about().get(fields='storageQuota').execute()
+        
+        # Извлечение данных о квоте хранилища
+        storage_quota = about.get('storageQuota', {})
+        
+        # Преобразование байтов в более читаемый формат
+        def format_size(size_bytes):
+            if size_bytes is None:
+                return "Неизвестно"
+            
+            # Преобразование строки в число, если это строка
+            if isinstance(size_bytes, str):
+                try:
+                    size_bytes = int(size_bytes)
+                except ValueError:
+                    return size_bytes
+            
+            # Размеры в байтах
+            for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
+                if size_bytes < 1024.0 or unit == 'ТБ':
+                    break
+                size_bytes /= 1024.0
+            return f"{size_bytes:.2f} {unit}"
+        
+        # Форматирование данных
+        usage = storage_quota.get('usage')
+        usage_in_drive = storage_quota.get('usageInDrive')
+        usage_in_trash = storage_quota.get('usageInTrash')
+        limit = storage_quota.get('limit')
+        
+        formatted_data = {
+            'использовано_всего': format_size(usage),
+            'использовано_на_диске': format_size(usage_in_drive),
+            'использовано_в_корзине': format_size(usage_in_trash),
+            'общий_лимит': format_size(limit),
+        }
+        
+        # Вычисление свободного места, если есть лимит
+        if limit is not None and usage is not None:
+            try:
+                limit_int = int(limit)
+                usage_int = int(usage)
+                free_space = limit_int - usage_int
+                formatted_data['свободно'] = format_size(free_space)
+                formatted_data['заполнено_процентов'] = f"{(usage_int / limit_int * 100):.2f}%"
+            except (ValueError, ZeroDivisionError):
+                formatted_data['свободно'] = "Не удалось рассчитать"
+                formatted_data['заполнено_процентов'] = "Не удалось рассчитать"
+        
+        return formatted_data
+        
+    except Exception as e:
+        print(f"Ошибка при получении информации о хранилище Google Drive: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def display_gdrive_storage_info():
+    """
+    Отображает информацию о свободном месте на Google Диске в виде текстового отчета
+    """
+    storage_info = check_gdrive_storage()
+    
+    if storage_info is None:
+        print("Не удалось получить информацию о хранилище Google Drive.")
+        return
+    
+    print("\n====== Информация о хранилище Google Drive ======")
+    print(f"Всего использовано: {storage_info.get('использовано_всего', 'Неизвестно')}")
+    print(f"Использовано на диске: {storage_info.get('использовано_на_диске', 'Неизвестно')}")
+    print(f"Использовано в корзине: {storage_info.get('использовано_в_корзине', 'Неизвестно')}")
+    print(f"Общий лимит: {storage_info.get('общий_лимит', 'Неизвестно')}")
+    print(f"Свободно: {storage_info.get('свободно', 'Неизвестно')}")
+    print(f"Заполнено: {storage_info.get('заполнено_процентов', 'Неизвестно')}")
+    print("================================================\n")
+
+# Расширяем функцию main для возможности проверки хранилища через аргумент командной строки
 def main():
     """Основная функция для запуска скрипта"""
     # Проверяем аргументы командной строки
-    if len(sys.argv) > 1 and sys.argv[1] == "--update-brands":
-        # Запускаем только обновление брендов
-        print("Запуск только обновления брендов")
-        update_all_brands()
-        return
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--update-brands":
+            # Запускаем только обновление брендов
+            print("Запуск только обновления брендов")
+            update_all_brands()
+            return
+        elif sys.argv[1] == "--check-storage":
+            # Проверка свободного места на Google Drive
+            print("Проверка свободного места на Google Drive")
+            display_gdrive_storage_info()
+            return
     
     # Стандартный запуск
     # Сначала запускаем обработку однократно
