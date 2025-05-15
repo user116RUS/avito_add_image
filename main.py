@@ -410,13 +410,33 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
             print(f"Добавление изображения магазина к первому изображению для объявления {ad_id}")
             result_path = add_shop_image(img_url, shop_image_path, output_path)
         else:
-            # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
-            # Используем остаток от деления на длину списка, чтобы не выйти за границы
-            overlay_index = i % len(OVERLAY_IMAGES)
-            overlay_path = OVERLAY_IMAGES[overlay_index]
-            print(f"Используем overlay {overlay_path} для изображения {i+1} объявления {ad_id}")
-            
-            result_path = overlay_image(img_url, overlay_path, output_path)
+            # Накладываем водяной знак только на первые 6 изображений
+            if i < 6:
+                # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
+                # Используем остаток от деления на длину списка, чтобы не выйти за границы
+                overlay_index = i % len(OVERLAY_IMAGES)
+                overlay_path = OVERLAY_IMAGES[overlay_index]
+                print(f"Используем overlay {overlay_path} для изображения {i+1} объявления {ad_id}")
+                
+                result_path = overlay_image(img_url, overlay_path, output_path)
+            else:
+                # Для остальных изображений просто сохраняем без наложения водяного знака
+                try:
+                    # Загрузка изображения
+                    response = requests.get(img_url)
+                    if response.status_code != 200:
+                        print(f"Ошибка загрузки изображения {img_url}, код: {response.status_code}")
+                        continue
+                        
+                    img = PILImage.open(BytesIO(response.content)).convert("RGB")
+                    img.save(output_path)
+                    result_path = output_path
+                    print(f"Изображение {i+1} сохранено без водяного знака для объявления {ad_id}")
+                except Exception as e:
+                    print(f"Ошибка при сохранении изображения без водяного знака: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
         
         if result_path:
             # Загрузка в Google Drive, если сервис предоставлен
