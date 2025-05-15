@@ -22,7 +22,7 @@ XML_URL = "https://media.cm.expert/stock/export/cmexpert/avito.ru/all/all/d55d8e
 LOCAL_XML_PATH = "avito_cmexpert.xml"
 OUTPUT_EXCEL_PATH = "avito_cmexpert_new.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 10 # Ограничиваем для демонстрации
+MAX_ITEMS = 9999 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
