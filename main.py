@@ -18,11 +18,11 @@ import uuid
 
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
-LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
-OUTPUT_EXCEL_PATH = "avito_processed.xlsx"
+LOCAL_XML_PATH = "local_xml_copy-ads.xml"
+OUTPUT_EXCEL_PATH = "copy-ads.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999 # Ограничиваем для демонстрации
-IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
+MAX_ITEMS = 1 # Ограничиваем для демонстрации
+IMAGES_FOLDER_NAME = "images_copy-ads"  # Название папки для изображений на Google Drive
 
 # Новый текст описания
 NEW_DESCRIPTION = """</p><p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>
