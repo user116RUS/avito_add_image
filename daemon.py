@@ -4,7 +4,7 @@ from datetime import datetime
 from importlib.machinery import SourceFileLoader
 
 # Загружаем модуль main.py как отдельный модуль
-main_module = SourceFileLoader("main_module", "/home/avito_add_image/main.py").load_module()
+main_module = SourceFileLoader("main_module", "main.py").load_module()
 download_xml = main_module.download_xml
 process_xml_with_gdrive = main_module.process_xml_with_gdrive
 
