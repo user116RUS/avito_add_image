@@ -23,7 +23,7 @@ LOCAL_XML_PATH = "avito_cmexpert.xml"
 OUTPUT_EXCEL_PATH = "avito_cmexpert_new.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
 MAX_ITEMS = 5 # Ограничиваем для демонстрации
-IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
+IMAGES_FOLDER_NAME = "avito_images/cmexpert"  # Название папки для изображений на Google Drive
 
 # Новый текст описания - установлен в пустую строку, чтобы не менять описание
 NEW_DESCRIPTION = ""
