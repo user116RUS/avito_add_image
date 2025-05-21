@@ -24,9 +24,9 @@ from openpyxl.styles import PatternFill
 
 # Конфигурация Cloudinary
 cloudinary.config(
-    cloud_name="your_cloud_name",
-    api_key="your_api_key",
-    api_secret="your_api_secret",
+    cloud_name="drzqhu6ql",
+    api_key="631387313999888",
+    api_secret="T1gzsvcce_Y9QAkP28atw1d2s5I",
     secure=True
 )
 
@@ -79,14 +79,14 @@ SHOP_IMAGES = [
     "shop/photo_7_2025-04-10_16-52-54.jpg"
 ]
 
-def generate_unique_images(original_url, ad_id, city_index):
+def generate_unique_images(original_url, ad_id, city_index, drive_service):
     """
-    Генерирует уникальные изображения через Cloudinary API
-    Возвращает список URL модифицированных изображений
+    Генерирует уникальные изображения через Cloudinary API и загружает их на Google Drive
+    Возвращает список прямых ссылок на изображения в Google Drive
     """
     try:
         # Загружаем исходное изображение в Cloudinary
-        upload_result = cloudinary.uploader.upload(original_url, public_id=f"original_{ad_id}")
+        upload_result = cloudinary.uploader.upload(original_url, public_id=f"original_{ad_id}_{city_index}")
         
         modified_urls = []
         
@@ -94,10 +94,10 @@ def generate_unique_images(original_url, ad_id, city_index):
         for i in range(1, 16):
             # Параметры трансформации
             transformation = [
-                {"effect": f"contrast:{5 + i*2}"},  # Контраст увеличивается
-                {"effect": f"grain:{3 + i}"},       # Зернистость увеличивается
-                {"effect": "vignette:30"},          # Добавляем виньетирование
-                {"angle": random.randint(0, 3)},    # Случайный небольшой поворот
+                {"effect": f"contrast:{5 + i*2}"},
+                {"effect": f"grain:{3 + i}"},
+                {"effect": "vignette:30"},
+                {"angle": random.randint(0, 3)},
                 {"overlay": {"font_family": "Arial", "font_size": 20, 
                             "text": f"{ad_id}-{city_index}", "gravity": "south_east",
                             "color": "white", "opacity": 50}}
@@ -108,7 +108,19 @@ def generate_unique_images(original_url, ad_id, city_index):
                 transformation=transformation
             )
             
-            modified_urls.append(modified_url)
+            # Скачиваем изображение из Cloudinary во временный файл
+            temp_file = f"temp_{ad_id}_{city_index}_{i}.jpg"
+            response = requests.get(modified_url)
+            with open(temp_file, 'wb') as f:
+                f.write(response.content)
+            
+            # Загружаем на Google Drive
+            drive_url = upload_image_to_gdrive(drive_service, temp_file)
+            if drive_url:
+                modified_urls.append(drive_url)
+            
+            # Удаляем временный файл
+            os.remove(temp_file)
         
         return modified_urls
     
@@ -116,21 +128,7 @@ def generate_unique_images(original_url, ad_id, city_index):
         print(f"Ошибка при создании уникальных изображений: {e}")
         return []
 
-def modify_description(description, city):
-    """
-    Модифицирует описание, заменяя текст о доставке
-    """
-    if not description:
-        return description
-    
-    new_delivery_text = DELIVERY_TEXT_NEW_TEMPLATE.format(city=city)
-    
-    # Заменяем старый текст о доставке на новый
-    modified_desc = description.replace(DELIVERY_TEXT_OLD, new_delivery_text)
-    
-    return modified_desc
-
-def create_duplicates(df):
+def create_duplicates(df, drive_service):
     """
     Создает дубликаты товаров для каждого города
     Возвращает новый DataFrame с дубликатами
@@ -166,10 +164,21 @@ def create_duplicates(df):
                 
                 modified_images = []
                 for img_url in product_images:
-                    modified_images.extend(generate_unique_images(img_url, original_id, i))
+                    modified_images.extend(generate_unique_images(img_url, original_id, i, drive_service))
                 
-                # Добавляем оригинальные фото магазина
-                modified_images.extend(shop_images)
+                # Добавляем оригинальные фото магазина (тоже загружаем на Google Drive)
+                for shop_img in shop_images:
+                    temp_file = f"temp_shop_{original_id}_{i}.jpg"
+                    response = requests.get(shop_img)
+                    with open(temp_file, 'wb') as f:
+                        f.write(response.content)
+                    
+                    drive_url = upload_image_to_gdrive(drive_service, temp_file)
+                    if drive_url:
+                        modified_images.append(drive_url)
+                    
+                    os.remove(temp_file)
+                
                 dup_row['ImageUrls'] = '|'.join(modified_images)
             
             dup_row['IsOriginal'] = False
@@ -177,6 +186,20 @@ def create_duplicates(df):
             duplicates.append(dup_row)
     
     return pd.DataFrame(duplicates)
+
+def modify_description(description, city):
+    """
+    Модифицирует описание, заменяя текст о доставке
+    """
+    if not description:
+        return description
+    
+    new_delivery_text = DELIVERY_TEXT_NEW_TEMPLATE.format(city=city)
+    
+    # Заменяем старый текст о доставке на новый
+    modified_desc = description.replace(DELIVERY_TEXT_OLD, new_delivery_text)
+    
+    return modified_desc
 
 def sync_with_xml(duplicated_df):
     """
@@ -1222,7 +1245,12 @@ def process_xml(use_gdrive_for_images=True):
             df[param] = ""  # Добавляем пустой столбец
     
     # Создаем дубликаты для каждого города
-    duplicated_df = create_duplicates(df)
+    credentials = service_account.Credentials.from_service_account_file(
+                    GOOGLE_CRED_PATH, 
+                    scopes=['https://www.googleapis.com/auth/drive']
+                )
+    drive_service = build('drive', 'v3', credentials=credentials)
+    duplicated_df = create_duplicates(df, drive_service)
     
     # Синхронизируем с XML
     synced_df = sync_with_xml(duplicated_df)
