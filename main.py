@@ -3,10 +3,11 @@ import time
 import xml.etree.ElementTree as ET
 import requests
 from PIL import Image as PILImage
+from PIL import ImageEnhance, ImageFilter
 import pandas as pd
 from io import BytesIO
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import schedule
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -15,14 +16,41 @@ import openpyxl
 from openpyxl.drawing.image import Image
 from pathlib import Path
 import uuid
+import re
+import json
+import random
+import numpy as np
+from PIL.ExifTags import TAGS, GPSTAGS
+import piexif
 
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
-LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
-OUTPUT_EXCEL_PATH = "avito_processed.xlsx"
+LOCAL_XML_PATH = "few_cities.xml"
+OUTPUT_EXCEL_PATH = "few_cities.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999 # Ограничиваем для демонстрации
-IMAGES_FOLDER_NAME = "avito_images"  # Название папки для изображений на Google Drive
+MAX_ITEMS = 1 # Ограничиваем для демонстрации
+IMAGES_FOLDER_NAME = "cities"  # Название папки для изображений на Google Drive
+GOOGLE_DRIVE_FOLDER_ID = '1rpCeoXFTW68E2BKkJsHNfU2WzryBDcYL'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
+SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
+
+# Список городов для дублирования
+CITY_LIST = [
+    "Новосибирск",
+    "Екатеринбург",
+    "Казань",
+    "Нижний Новгород",
+    "Челябинск",
+    "Самара",
+    "Омск",
+    "Ростов-на-Дону",
+    "Уфа",
+    "Красноярск",
+    "Пермь",
+    "Воронеж",
+    "Волгоград",
+    "Краснодар",
+    "Саратов"
+]
 
 # Новый текст описания
 NEW_DESCRIPTION = """</p><p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>
@@ -236,45 +264,49 @@ def upload_image_to_gdrive(drive_service, file_path, max_retries=3, retry_delay=
             file_name = os.path.basename(file_path)
             
             # Проверим, существует ли папка для изображений
-            folder_id = None
-            try:
-                print(f"Поиск папки {IMAGES_FOLDER_NAME} на Google Drive")
-                response = drive_service.files().list(
-                    q=f"name='{IMAGES_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                    spaces='drive',
-                    fields='files(id, name)'
-                ).execute()
-                
-                if not response.get('files'):
-                    # Создаем папку для изображений
-                    print(f"Папка {IMAGES_FOLDER_NAME} не найдена, создаю новую")
-                    folder_metadata = {
-                        'name': IMAGES_FOLDER_NAME,
-                        'mimeType': 'application/vnd.google-apps.folder'
-                    }
-                    folder = drive_service.files().create(
-                        body=folder_metadata,
-                        fields='id'
+            folder_id = GOOGLE_DRIVE_FOLDER_ID  # Используем ID папки, если он указан
+            
+            if folder_id is None:
+                try:
+                    print(f"Поиск папки {IMAGES_FOLDER_NAME} на Google Drive")
+                    response = drive_service.files().list(
+                        q=f"name='{IMAGES_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                        spaces='drive',
+                        fields='files(id, name)'
                     ).execute()
-                    folder_id = folder.get('id')
-                    print(f"Создана папка с ID: {folder_id}")
                     
-                    # Устанавливаем доступ на редактирование для папки
-                    drive_service.permissions().create(
-                        fileId=folder_id,
-                        body={
-                            'type': 'anyone',
-                            'role': 'writer',  # изменено с 'reader' на 'writer'
+                    if not response.get('files'):
+                        # Создаем папку для изображений
+                        print(f"Папка {IMAGES_FOLDER_NAME} не найдена, создаю новую")
+                        folder_metadata = {
+                            'name': IMAGES_FOLDER_NAME,
+                            'mimeType': 'application/vnd.google-apps.folder'
                         }
-                    ).execute()
-                    print("Права доступа к папке установлены")
-                else:
-                    folder_id = response.get('files')[0].get('id')
-                    print(f"Найдена существующая папка с ID: {folder_id}")
-            except Exception as e:
-                print(f"Ошибка при работе с папкой на Google Drive: {e}")
-                # Если не удалось получить/создать папку, загружаем файл в корень
-                folder_id = None
+                        folder = drive_service.files().create(
+                            body=folder_metadata,
+                            fields='id'
+                        ).execute()
+                        folder_id = folder.get('id')
+                        print(f"Создана папка с ID: {folder_id}")
+                        
+                        # Устанавливаем доступ на редактирование для папки
+                        drive_service.permissions().create(
+                            fileId=folder_id,
+                            body={
+                                'type': 'anyone',
+                                'role': 'writer',  # изменено с 'reader' на 'writer'
+                            }
+                        ).execute()
+                        print("Права доступа к папке установлены")
+                    else:
+                        folder_id = response.get('files')[0].get('id')
+                        print(f"Найдена существующая папка с ID: {folder_id}")
+                except Exception as e:
+                    print(f"Ошибка при работе с папкой на Google Drive: {e}")
+                    # Если не удалось получить/создать папку, загружаем файл в корень
+                    folder_id = None
+            else:
+                print(f"Используется указанная папка с ID: {folder_id}")
             
             # Загружаем файл в папку или корень
             file_metadata = {
@@ -466,60 +498,14 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
                 processed_urls.append(output_path)
                 print(f"Google Drive не используется, сохранен локальный путь: {output_path}")
     
-    # Добавляем изображения магазина, если осталось место (максимум 10 изображений)
-    remaining_slots = 10 - len(processed_urls)
-    if remaining_slots > 0 and SHOP_IMAGES:
-        print(f"Осталось {remaining_slots} слотов для изображений магазина")
-        
-        # Добавляем столько изображений магазина, сколько поместится
-        shop_images_to_add = min(remaining_slots, len(SHOP_IMAGES))
-        print(f"Добавляем {shop_images_to_add} изображений магазина")
-        
-        for i in range(shop_images_to_add):
-            shop_img_path = SHOP_IMAGES[i]
-            shop_output_path = os.path.join(output_dir, f"{ad_id}_shop_{i+1}.jpg")
-            
-            try:
-                # Копируем файлы магазина
-                with open(shop_img_path, 'rb') as src, open(shop_output_path, 'wb') as dst:
-                    dst.write(src.read())
-                print(f"Скопировано изображение магазина {shop_img_path} -> {shop_output_path}")
-                
-                # Загружаем изображение магазина в Google Drive, если доступно
-                if gdrive_service:
-                    try:
-                        shop_url = upload_image_to_gdrive(gdrive_service, shop_output_path)
-                        if shop_url:
-                            processed_urls.append(shop_url)
-                            print(f"Изображение магазина загружено в Google Drive: {shop_url}")
-                        else:
-                            # Если не удалось загрузить, используем локальный путь
-                            processed_urls.append(shop_output_path)
-                            print(f"Не удалось загрузить изображение магазина в Google Drive, используем локальный путь")
-                    except Exception as e:
-                        print(f"Ошибка при загрузке изображения магазина в Google Drive: {e}")
-                        processed_urls.append(shop_output_path)
-                else:
-                    processed_urls.append(shop_output_path)
-                    print(f"Google Drive не используется, сохранен локальный путь для изображения магазина: {shop_output_path}")
-            except Exception as e:
-                print(f"Ошибка при копировании изображения магазина {shop_img_path}: {e}")
+    # Изображения магазина теперь добавляются в основной функции process_xml,
+    # поэтому здесь мы их не добавляем
     
     print(f"Обработка изображений для {ad_id} завершена, результат: {processed_urls}")
     return processed_urls
 
-def resize_image(image_path, max_size=160):
-    """
-    Изменяет размер изображения, сохраняя соотношение сторон, чтобы наибольшая сторона была max_size пикселей.
-    """
-    with PILImage.open(image_path) as img:
-        ratio = min(max_size / img.width, max_size / img.height)
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        resized_img = img.resize(new_size, PILImage.LANCZOS)
-        return resized_img
-
 def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
-    """Сохранение DataFrame в Excel-файл"""
+    """Сохранение DataFrame в Excel-файл с форматированием исходных строк"""
     
     # Проверяем, существует ли уже файл Excel
     if os.path.exists(output_path):
@@ -527,25 +513,49 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
         existing_data = pd.read_excel(output_path)
         
         # Создаем копию существующих данных
-        merged_df = existing_data.copy()
+        merged_df = df.copy()
         
         # Проверяем новые данные из df на отсутствие в существующей таблице по Id
         if 'Id' in df.columns and 'Id' in existing_data.columns:
             # Получаем список существующих Id
             existing_ids = set(existing_data['Id'].astype(str).tolist())
             
-            # Фильтруем новые данные, оставляя только отсутствующие
-            new_rows = df[~df['Id'].astype(str).isin(existing_ids)]
+            # Проверяем, были ли добавлены новые строки
+            new_ids = set(df['Id'].astype(str).tolist()) - existing_ids
             
-            # Если есть новые строки, добавляем их в конец существующей таблицы
-            if len(new_rows) > 0:
-                print(f"Добавление {len(new_rows)} новых строк к существующим {len(existing_data)}")
+            if len(new_ids) > 0:
+                print(f"Найдено {len(new_ids)} новых ID для добавления")
                 
-                # Добавляем новые строки в конец
-                merged_df = pd.concat([existing_data, new_rows], ignore_index=True)
+                # Сохраняем DataFrame во временный файл Excel
+                temp_output = f"temp_{output_path}"
+                merged_df.to_excel(temp_output, index=False)
                 
-                # Сохраняем обновленную таблицу
-                merged_df.to_excel(output_path, index=False)
+                # Открываем Excel-файл с помощью openpyxl для форматирования
+                wb = openpyxl.load_workbook(temp_output)
+                ws = wb.active
+                
+                # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+                yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                
+                # Находим индекс столбца с Id
+                id_col_index = None
+                for i, cell in enumerate(ws[1]):
+                    if cell.value == 'Id':
+                        id_col_index = i + 1  # openpyxl использует индексацию с 1
+                        break
+                
+                if id_col_index:
+                    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):  # Начинаем с 2, пропуская заголовок
+                        cell = row[id_col_index - 1]  # Получаем ячейку с Id
+                        if cell.value and "-" not in str(cell.value):  # Если это исходный товар (без суффикса "-")
+                            for cell in row:
+                                cell.fill = yellow_fill
+                
+                # Сохраняем отформатированный файл
+                wb.save(output_path)
+                
+                # Удаляем временный файл
+                os.remove(temp_output)
                 
                 return output_path, True  # Файл был обновлен
             else:
@@ -554,12 +564,72 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
         else:
             print("Отсутствует столбец 'Id' в исходных данных или в новых данных")
             # Если нет Id в одном из DataFrame, просто добавляем новые строки в конец
-            merged_df = pd.concat([existing_data, df], ignore_index=True)
-            merged_df.to_excel(output_path, index=False)
+            
+            # Сохраняем во временный файл
+            temp_output = f"temp_{output_path}"
+            merged_df.to_excel(temp_output, index=False)
+            
+            # Открываем Excel-файл с помощью openpyxl для форматирования
+            wb = openpyxl.load_workbook(temp_output)
+            ws = wb.active
+            
+            # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+            yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            
+            # Находим индекс столбца с Id
+            id_col_index = None
+            for i, cell in enumerate(ws[1]):
+                if cell.value == 'Id':
+                    id_col_index = i + 1
+                    break
+            
+            if id_col_index:
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+                    cell = row[id_col_index - 1]
+                    if cell.value and "-" not in str(cell.value):
+                        for cell in row:
+                            cell.fill = yellow_fill
+            
+            # Сохраняем отформатированный файл
+            wb.save(output_path)
+            
+            # Удаляем временный файл
+            os.remove(temp_output)
+            
             return output_path, True  # Файл был обновлен
     else:
         # Если файл не существует, создаем новый
-        df.to_excel(output_path, index=False)
+        # Сохраняем во временный файл
+        temp_output = f"temp_{output_path}"
+        df.to_excel(temp_output, index=False)
+        
+        # Открываем Excel-файл с помощью openpyxl для форматирования
+        wb = openpyxl.load_workbook(temp_output)
+        ws = wb.active
+        
+        # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+        yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        
+        # Находим индекс столбца с Id
+        id_col_index = None
+        for i, cell in enumerate(ws[1]):
+            if cell.value == 'Id':
+                id_col_index = i + 1
+                break
+        
+        if id_col_index:
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+                cell = row[id_col_index - 1]
+                if cell.value and "-" not in str(cell.value):
+                    for cell in row:
+                        cell.fill = yellow_fill
+        
+        # Сохраняем отформатированный файл
+        wb.save(output_path)
+        
+        # Удаляем временный файл
+        os.remove(temp_output)
+        
         print(f"Создан новый Excel-файл: {output_path}")
         return output_path, True  # Файл был создан
 
@@ -584,9 +654,23 @@ def upload_to_google_drive(file_path, force_update=True):
         # Название файла в Google Drive
         file_name = os.path.basename(file_path)
         
+        # Проверяем доступ к папке, если указан ID
+        folder_id = None
+        if GOOGLE_DRIVE_FOLDER_ID:
+            if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                folder_id = GOOGLE_DRIVE_FOLDER_ID
+                print(f"Excel-файл будет сохранен в папке с ID: {folder_id}")
+        
+        # Создаем запрос для поиска файла
+        query = f"name='{file_name}' and trashed=false"
+        
+        # Если у нас есть folder_id, ищем файл только в этой папке
+        if folder_id:
+            query += f" and '{folder_id}' in parents"
+            
         # Проверка, существует ли файл с таким именем
         response = drive_service.files().list(
-            q=f"name='{file_name}' and trashed=false",
+            q=query,
             spaces='drive',
             fields='files(id, name)'
         ).execute()
@@ -599,6 +683,11 @@ def upload_to_google_drive(file_path, force_update=True):
                 'name': file_name,
                 'mimeType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             }
+            
+            # Если у нас есть folder_id, добавляем его в метаданные
+            if folder_id:
+                file_metadata['parents'] = [folder_id]
+                
             media = MediaFileUpload(file_path, resumable=True)
             file = drive_service.files().create(
                 body=file_metadata,
@@ -662,11 +751,21 @@ def sync_excel_from_gdrive():
         # Название файла в Google Drive
         file_name = os.path.basename(OUTPUT_EXCEL_PATH)
         
+        # Создаем запрос для поиска файла
+        query = f"name='{file_name}' and trashed=false"
+        
+        # Если у нас есть GOOGLE_DRIVE_FOLDER_ID, ищем файл только в этой папке
+        if GOOGLE_DRIVE_FOLDER_ID:
+            # Проверяем доступ к папке
+            if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                query += f" and '{GOOGLE_DRIVE_FOLDER_ID}' in parents"
+                print(f"Поиск Excel-файла в папке с ID: {GOOGLE_DRIVE_FOLDER_ID}")
+        
         # Поиск файла на Google Drive
         response = drive_service.files().list(
-            q=f"name='{file_name}' and trashed=false",
+            q=query,
             spaces='drive',
-            fields='files(id, name)'
+            fields='files(id, name, parents)'
         ).execute()
         
         if not response.get('files'):
@@ -674,6 +773,16 @@ def sync_excel_from_gdrive():
             return False
             
         file_id = response.get('files')[0].get('id')
+        
+        # Выводим информацию о родительской папке
+        parents = response.get('files')[0].get('parents', [])
+        if parents:
+            for parent_id in parents:
+                try:
+                    parent = drive_service.files().get(fileId=parent_id, fields='id, name').execute()
+                    print(f"Файл находится в папке: {parent.get('name')} (ID: {parent_id})")
+                except Exception as e:
+                    print(f"Не удалось получить информацию о родительской папке: {e}")
         
         # Скачивание файла
         request = drive_service.files().get_media(fileId=file_id)
@@ -704,6 +813,249 @@ def sync_excel_from_gdrive():
         traceback.print_exc()
         return False
 
+def duplicate_rows(data_frame):
+    """
+    Создает 15 дублей для каждой строки с изменением ID и адреса
+    
+    data_frame: DataFrame с исходными данными
+    
+    Возвращает: DataFrame с исходными строками и их дублями
+    """
+    if data_frame.empty:
+        return data_frame
+        
+    print(f"Создание дублей для {len(data_frame)} строк")
+    
+    # Список для хранения всех строк (исходных и дублей)
+    all_rows = []
+    
+    # Инициализируем Google Drive API для загрузки уникализированных изображений
+    gdrive_service = None
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            GOOGLE_CRED_PATH, 
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        gdrive_service = build('drive', 'v3', credentials=credentials)
+        print("Google Drive API инициализирован для загрузки уникализированных изображений.")
+    except Exception as e:
+        print(f"Ошибка при инициализации Google Drive API: {e}")
+        print("Уникализированные изображения будут сохранены локально.")
+    
+    # Создаем директорию для уникализированных изображений
+    unique_images_dir = "uniqualized_images"
+    os.makedirs(unique_images_dir, exist_ok=True)
+    
+    # Загружаем ссылки на изображения магазина из кэша
+    shop_image_urls = load_shop_images_cache()
+    if shop_image_urls is None:
+        # Если кэш не найден, создаем пустой список
+        shop_image_urls = []
+        print("Не удалось загрузить ссылки на изображения магазина из кэша, используется пустой список")
+    else:
+        print(f"Загружено {len(shop_image_urls)} ссылок на изображения магазина из кэша")
+    
+    # Для каждой строки в исходном DataFrame
+    for _, row in data_frame.iterrows():
+        # Добавляем исходную строку (оригинал без изменений)
+        all_rows.append(row.to_dict())
+        
+        # Получаем исходный ID
+        original_id = row['Id']
+        
+        # Проверяем, начинается ли ID с "bz" (оригинальный товар)
+        is_original_product = str(original_id).startswith("bz")
+        
+        # Получаем список URL изображений, если они есть
+        original_image_urls = []
+        if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
+            original_image_urls = row['ImageUrls'].split('|')
+        
+        # Создаем 15 дублей с изменениями
+        for i in range(1, 16):
+            # Создаем копию строки
+            duplicate = row.to_dict()
+            
+            # Изменяем ID (добавляем -1, -2, и т.д.)
+            duplicate['Id'] = f"{original_id}-{i}"
+            
+            # Изменяем адрес на город из списка
+            city_index = (i - 1) % len(CITY_LIST)  # Используем остаток от деления, чтобы не выйти за границы списка
+            city = CITY_LIST[city_index]
+            duplicate['Address'] = city
+            
+            # Модифицируем описание, заменяя блок с доставкой
+            if 'Description' in duplicate and duplicate['Description']:
+                description = duplicate['Description']
+                
+                # Различные варианты начала текста с доставкой
+                delivery_variations = [
+                    "<p>🚚<strong>Доставка по РФ</strong>",
+                    "<p>🚚<strong>Доставка по РФ </strong>",
+                    '<p>🚚<strong>Доставка по РФ</strong>'
+                ]
+                
+                # Различные варианты текста с артикулом
+                article_variations = [
+                    "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>",
+                    "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>",
+                    '<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>'
+                ]
+                
+                # Текст для поиска (полные блоки)
+                old_text_1 = "<p>🚚<strong>Доставка по РФ</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p>"
+                old_text_2 = "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong><br /> Присылайте фото или свой вопрос по запчасти, мы подберем нужную запчасть</p>"
+                
+                # Новый текст с указанием города
+                new_text = f"""<p>🚚<strong> Доставка в {city}</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p>
+<p>📍В наличии на складе в г. Тула, улица Волнянского, 1</p>"""
+                
+                # Метод 1: Попытка заменить полные блоки
+                if old_text_1 in description and old_text_2 in description:
+                    # Находим начало первого блока и конец второго
+                    start_idx = description.find(old_text_1)
+                    end_idx = description.find(old_text_2) + len(old_text_2)
+                    
+                    # Проверяем, что индексы найдены
+                    if start_idx != -1 and end_idx != -1:
+                        # Заменяем весь блок от начала первого до конца второго
+                        new_description = description[:start_idx] + new_text + description[end_idx:]
+                        duplicate['Description'] = new_description
+                        print(f"Метод 1: Заменен текст в описании для товара {duplicate['Id']} с городом {city}")
+                        
+                # Метод 2: Поиск по вариациям начала блоков
+                else:
+                    start_idx = -1
+                    end_idx = -1
+                    
+                    # Ищем начало текста с доставкой
+                    for variation in delivery_variations:
+                        if variation in description:
+                            start_idx = description.find(variation)
+                            break
+                    
+                    # Если нашли начало, ищем конец блока с артикулом
+                    if start_idx != -1:
+                        # Ищем начало блока с артикулом
+                        article_start_idx = -1
+                        for variation in article_variations:
+                            if variation in description[start_idx:]:
+                                article_start_idx = description.find(variation, start_idx)
+                                break
+                        
+                        # Если нашли артикул, ищем его конец
+                        if article_start_idx != -1:
+                            # Ищем конец абзаца после артикула
+                            article_end_idx = description.find("</p>", article_start_idx)
+                            if article_end_idx != -1:
+                                end_idx = article_end_idx + 4  # +4 для включения </p>
+                    
+                    # Если нашли оба индекса, выполняем замену
+                    if start_idx != -1 and end_idx != -1:
+                        new_description = description[:start_idx] + new_text + description[end_idx:]
+                        duplicate['Description'] = new_description
+                        print(f"Метод 2: Заменен текст в описании для товара {duplicate['Id']} с городом {city}")
+            
+            # Уникализируем изображения только для дублей товаров (не для оригинальных)
+            if original_image_urls:
+                # Список для новых уникализированных URL
+                unique_image_urls = []
+                
+                # Определяем, какие изображения являются изображениями магазина (последние в списке)
+                shop_images = []
+                product_images = original_image_urls.copy()
+                
+                # Ищем изображения магазина по URL
+                for url in reversed(original_image_urls):
+                    if shop_image_urls and url in shop_image_urls:
+                        shop_images.insert(0, url)  # Добавляем в начало списка
+                        product_images.remove(url)  # Удаляем из списка изображений продукта
+                    else:
+                        break  # Прекращаем поиск, если нашли изображение, которое не является изображением магазина
+                
+                print(f"Для товара {duplicate['Id']}: найдено {len(product_images)} изображений продукта и {len(shop_images)} изображений магазина")
+                
+                # Обрабатываем изображения продукта
+                if is_original_product:
+                    # Для оригинальных товаров не уникализируем изображения
+                    print(f"Товар {duplicate['Id']} является дублем оригинального товара, сохраняем оригинальные изображения")
+                    unique_image_urls = product_images
+                else:
+                    # Для дублей неоригинальных товаров уникализируем изображения
+                    print(f"Товар {duplicate['Id']} не является дублем оригинального товара, уникализируем изображения")
+                    for j, img_url in enumerate(product_images):
+                        unique_url = process_image_for_derived_products(
+                            img_url, 
+                            unique_images_dir, 
+                            original_id, 
+                            city_index + j,  # Добавляем j для большей вариации
+                            gdrive_service
+                        )
+                        if unique_url:
+                            unique_image_urls.append(unique_url)
+                        else:
+                            # Если уникализация не удалась, используем исходный URL
+                            unique_image_urls.append(img_url)
+                
+                # Добавляем изображения магазина без изменений
+                unique_image_urls.extend(shop_images)
+                
+                # Обновляем ImageUrls в дубле
+                duplicate['ImageUrls'] = "|".join(unique_image_urls)
+                print(f"Для товара {duplicate['Id']}: обновлены URL изображений")
+            
+            # Добавляем дубль в список всех строк
+            all_rows.append(duplicate)
+    
+    # Создаем новый DataFrame из всех строк
+    result_df = pd.DataFrame(all_rows)
+    
+    print(f"Создано {len(result_df)} строк (исходные + дубли)")
+    return result_df
+
+def load_shop_images_cache():
+    """Загружает сохраненные ссылки на изображения магазина из кэша"""
+    if os.path.exists(SHOP_IMAGES_CACHE_FILE):
+        try:
+            with open(SHOP_IMAGES_CACHE_FILE, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+                print(f"Загружен кэш изображений магазина, найдено {len(cache)} ссылок")
+                
+                # Проверяем валидность кэша - проверяем наличие всех изображений из SHOP_IMAGES
+                if 'shop_images' in cache and len(cache['shop_images']) == len(SHOP_IMAGES):
+                    all_urls_valid = True
+                    for url in cache['shop_images']:
+                        # Проверяем, что строка похожа на URL
+                        if not url.startswith('http'):
+                            all_urls_valid = False
+                            break
+                    
+                    if all_urls_valid:
+                        print("Кэш валиден, используем сохраненные ссылки")
+                        return cache['shop_images']
+                
+                print("Кэш невалиден или устарел, требуется повторная загрузка изображений")
+                return None
+        except Exception as e:
+            print(f"Ошибка при загрузке кэша изображений магазина: {e}")
+            return None
+    else:
+        print(f"Файл кэша {SHOP_IMAGES_CACHE_FILE} не найден")
+        return None
+
+def save_shop_images_cache(shop_image_urls):
+    """Сохраняет ссылки на изображения магазина в кэш"""
+    if shop_image_urls:
+        try:
+            cache = {'shop_images': shop_image_urls, 'timestamp': datetime.now().isoformat()}
+            with open(SHOP_IMAGES_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            print(f"Кэш изображений магазина сохранен, {len(shop_image_urls)} ссылок")
+            return True
+        except Exception as e:
+            print(f"Ошибка при сохранении кэша изображений магазина: {e}")
+    return False
+
 def process_xml(use_gdrive_for_images=True):
     """Обработка XML-файла и создание Excel-таблицы"""
     # Синхронизация с Google Drive
@@ -726,6 +1078,39 @@ def process_xml(use_gdrive_for_images=True):
             print(f"Ошибка при инициализации Google Drive API: {e}")
             print("Изображения будут обработаны без загрузки на Google Drive.")
     
+    # Сначала пробуем загрузить ссылки на изображения магазина из кэша
+    shop_image_urls = load_shop_images_cache()
+    
+    # Если не удалось загрузить из кэша, загружаем изображения магазина
+    if shop_image_urls is None and gdrive_service and SHOP_IMAGES:
+        shop_image_urls = []
+        print("Предварительная загрузка изображений магазина...")
+        for i, shop_img_path in enumerate(SHOP_IMAGES):
+            if os.path.exists(shop_img_path):
+                shop_output_path = os.path.join(output_dir, f"shop_image_{i+1}.jpg")
+                
+                try:
+                    # Копируем файлы магазина
+                    with open(shop_img_path, 'rb') as src, open(shop_output_path, 'wb') as dst:
+                        dst.write(src.read())
+                    print(f"Скопировано изображение магазина {shop_img_path} -> {shop_output_path}")
+                    
+                    # Загружаем изображение магазина в Google Drive
+                    shop_url = upload_image_to_gdrive(gdrive_service, shop_output_path)
+                    if shop_url:
+                        shop_image_urls.append(shop_url)
+                        print(f"Изображение магазина предварительно загружено в Google Drive: {shop_url}")
+                    else:
+                        print(f"Не удалось загрузить изображение магазина в Google Drive")
+                except Exception as e:
+                    print(f"Ошибка при предварительной загрузке изображения магазина {shop_img_path}: {e}")
+        
+        print(f"Предварительно загружено {len(shop_image_urls)} изображений магазина")
+        
+        # Сохраняем ссылки в кэш для будущих запусков
+        if shop_image_urls:
+            save_shop_images_cache(shop_image_urls)
+    
     # Проверяем, существует ли уже файл Excel с данными
     existing_ids = set()
     existing_products_with_missing_images = {}
@@ -736,6 +1121,17 @@ def process_xml(use_gdrive_for_images=True):
             # Загружаем существующие данные для определения ID товаров, которые уже обработаны
             existing_data = pd.read_excel(OUTPUT_EXCEL_PATH)
             print(f"Загружены существующие данные из {OUTPUT_EXCEL_PATH}, строк: {len(existing_data)}")
+            
+            # Очищаем "осиротевшие" производные товары
+            existing_data, was_cleaned = clean_orphaned_derived_products(existing_data)
+            if was_cleaned:
+                # Сохраняем очищенные данные
+                existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
+                print(f"Сохранены очищенные данные в {OUTPUT_EXCEL_PATH}")
+                
+                # Загружаем очищенный файл на Google Drive
+                file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+                print(f"Очищенная таблица загружена на Google Drive")
             
             if 'Id' in existing_data.columns:
                 # Получаем список существующих Id
@@ -772,23 +1168,81 @@ def process_xml(use_gdrive_for_images=True):
     
     # Проверяем, какие товары из Excel отсутствуют в XML
     if existing_data is not None and len(existing_ids) > 0:
-        removed_ids = existing_ids - xml_ids
-        if removed_ids:
-            print(f"Найдено {len(removed_ids)} товаров, которые были удалены из XML:")
-            for removed_id in removed_ids:
+        # Находим только базовые ID (без суффиксов) из XML
+        base_xml_ids = set()
+        for xml_id in xml_ids:
+            # Только базовые ID (без суффиксов)
+            if "-" not in xml_id:
+                base_xml_ids.add(xml_id)
+        
+        # Находим только базовые ID (без суффиксов) из Excel
+        base_excel_ids = set()
+        derived_excel_ids = {}  # Словарь для группировки производных ID по базовым
+        
+        for excel_id in existing_ids:
+            if "-" not in excel_id:
+                base_excel_ids.add(excel_id)
+            else:
+                # Если это производный ID (с суффиксом)
+                base_id = excel_id.split("-")[0]
+                if base_id not in derived_excel_ids:
+                    derived_excel_ids[base_id] = []
+                derived_excel_ids[base_id].append(excel_id)
+        
+        # Находим базовые ID, которые были удалены из XML
+        removed_base_ids = base_excel_ids - base_xml_ids
+        
+        if removed_base_ids:
+            print(f"Найдено {len(removed_base_ids)} базовых товаров, которые были удалены из XML:")
+            for removed_id in removed_base_ids:
                 print(f"- {removed_id}")
             
-            # Удаляем строки с отсутствующими товарами
-            existing_data = existing_data[~existing_data['Id'].astype(str).isin(removed_ids)]
-            print(f"Удалено {len(removed_ids)} товаров из Excel-таблицы")
+            # Собираем все ID, которые нужно удалить (базовые и их производные)
+            all_ids_to_remove = set()
             
-            # Сохраняем обновленную таблицу
-            existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
-            print(f"Обновленная таблица сохранена в {OUTPUT_EXCEL_PATH}")
+            for removed_id in removed_base_ids:
+                # Добавляем базовый ID
+                all_ids_to_remove.add(removed_id)
+                
+                # Добавляем все производные ID этого базового ID
+                if removed_id in derived_excel_ids:
+                    all_ids_to_remove.update(derived_excel_ids[removed_id])
+                    print(f"Удаляются производные ID для {removed_id}: {derived_excel_ids[removed_id]}")
             
-            # Загружаем обновленную таблицу на Google Drive
-            file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
-            print(f"Обновленная таблица загружена на Google Drive")
+            # Дополнительная проверка для поиска связанных строк, которые могут не соответствовать шаблону baseId-suffix
+            # Например, если ID в Excel был изменен вручную
+            if 'Address' in existing_data.columns:
+                # Получаем строки с базовыми ID для определения городов
+                base_rows = existing_data[existing_data['Id'].astype(str).isin(removed_base_ids)]
+                
+                # Для каждого удаленного базового товара проверяем возможные связанные товары
+                for _, base_row in base_rows.iterrows():
+                    base_id = str(base_row['Id'])
+                    # Ищем строки с тем же заголовком или описанием, которые могут быть дублями
+                    if 'Title' in existing_data.columns and pd.notna(base_row['Title']):
+                        title = base_row['Title']
+                        similar_title_rows = existing_data[
+                            (existing_data['Title'] == title) & 
+                            (~existing_data['Id'].astype(str).isin(all_ids_to_remove))
+                        ]
+                        if not similar_title_rows.empty:
+                            similar_ids = similar_title_rows['Id'].astype(str).tolist()
+                            print(f"Найдены возможные связанные товары с тем же заголовком для {base_id}: {similar_ids}")
+                            all_ids_to_remove.update(similar_ids)
+            
+            # Удаляем все связанные записи из DataFrame
+            old_len = len(existing_data)
+            existing_data = existing_data[~existing_data['Id'].astype(str).isin(all_ids_to_remove)]
+            new_len = len(existing_data)
+            print(f"Удалено {old_len - new_len} записей (базовые товары и их дубли)")
+        
+        # Сохраняем обновленную таблицу
+        existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
+        print(f"Обновленная таблица сохранена в {OUTPUT_EXCEL_PATH}")
+        
+        # Загружаем обновленную таблицу на Google Drive
+        file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+        print(f"Обновленная таблица загружена на Google Drive")
     
     # Ищем и удаляем нежелательный текст в описаниях
     print("Ищем и удаляем нежелательный текст в описаниях...")
@@ -864,8 +1318,19 @@ def process_xml(use_gdrive_for_images=True):
             # Обработка изображений
             processed_images = process_images(ad, output_dir, ad_id, gdrive_service)
             if processed_images:
+                # Добавляем ссылки на изображения магазина, если они есть
+                all_images = list(processed_images)
+                if shop_image_urls:
+                    # Проверяем, сколько ещё можно добавить изображений (максимум 10)
+                    remaining_slots = 10 - len(all_images)
+                    if remaining_slots > 0:
+                        # Добавляем столько изображений магазина, сколько поместится
+                        shop_images_to_add = min(remaining_slots, len(shop_image_urls))
+                        print(f"Добавляем {shop_images_to_add} предварительно загруженных изображений магазина")
+                        all_images.extend(shop_image_urls[:shop_images_to_add])
+                
                 # Формируем строку со всеми URL изображений, разделенными |
-                image_urls_string = "|".join(processed_images)
+                image_urls_string = "|".join(all_images)
                 
                 # Обновляем запись в существующем DataFrame
                 row_index = existing_products_with_missing_images[ad_id]
@@ -880,7 +1345,7 @@ def process_xml(use_gdrive_for_images=True):
                         images_element.remove(img)
                         
                     # Добавляем новые изображения в XML
-                    for i, img_path in enumerate(processed_images):
+                    for i, img_path in enumerate(all_images):
                         # Получаем соответствующий URL
                         img_url = img_path if isinstance(img_path, str) else img_path[0]
                         
@@ -894,12 +1359,22 @@ def process_xml(use_gdrive_for_images=True):
         if not ad_id.startswith("bz") or processed_count >= MAX_ITEMS:
             continue
         
-        # Пропускаем уже существующие товары (кроме тех, которые нуждаются в добавлении изображений)
-        if ad_id in existing_ids and ad_id not in existing_products_with_missing_images:
+        # Проверка существующих записей
+        is_existing_product = ad_id in existing_ids
+        
+        # Проверяем, есть ли производные ID (с суффиксами) для этого базового ID
+        has_derived_ids = False
+        for existing_id in existing_ids:
+            if existing_id.startswith(ad_id + "-"):
+                has_derived_ids = True
+                break
+        
+        # Пропускаем товары, которые уже имеют производные записи
+        if is_existing_product and has_derived_ids:
             skipped_count += 1
-            print(f"Пропуск объявления {ad_id} (уже существует в таблице)")
+            print(f"Пропуск объявления {ad_id} (уже существует в таблице вместе с производными ID)")
             continue
-            
+        
         processed_count += 1
         print(f"Обработка объявления {ad_id} ({processed_count}/{MAX_ITEMS - skipped_count})")
         
@@ -956,7 +1431,19 @@ def process_xml(use_gdrive_for_images=True):
         processed_images_dict[ad_id] = processed_images
         
         # Если есть секция Images, заменяем её в XML
-        if processed_images:
+        all_images = list(processed_images)
+        
+        # Добавляем ссылки на изображения магазина, если они есть
+        if shop_image_urls:
+            # Проверяем, сколько ещё можно добавить изображений (максимум 10)
+            remaining_slots = 10 - len(all_images)
+            if remaining_slots > 0:
+                # Добавляем столько изображений магазина, сколько поместится
+                shop_images_to_add = min(remaining_slots, len(shop_image_urls))
+                print(f"Добавляем {shop_images_to_add} предварительно загруженных изображений магазина")
+                all_images.extend(shop_image_urls[:shop_images_to_add])
+        
+        if all_images:
             images_element = ad.find("Images")
             if images_element is not None:
                 # Удаляем существующие изображения
@@ -964,7 +1451,7 @@ def process_xml(use_gdrive_for_images=True):
                     images_element.remove(img)
                     
                 # Добавляем новые изображения в XML
-                for i, img_path in enumerate(processed_images):
+                for i, img_path in enumerate(all_images):
                     # Получаем соответствующий URL
                     img_url = img_path if isinstance(img_path, str) else img_path[0]
                     
@@ -974,7 +1461,7 @@ def process_xml(use_gdrive_for_images=True):
                     img_elem.set("url", img_url)
         
         # Формируем строку со всеми URL изображений, разделенными |
-        image_urls_string = "|".join(processed_images)
+        image_urls_string = "|".join(all_images)
         
         # Собираем данные для Excel
         row_data = {
@@ -1035,9 +1522,17 @@ def process_xml(use_gdrive_for_images=True):
                 # Название файла в Google Drive
                 file_name = os.path.basename(OUTPUT_EXCEL_PATH)
                 
+                # Создаем запрос для поиска файла
+                query = f"name='{file_name}' and trashed=false"
+                
+                # Если у нас есть GOOGLE_DRIVE_FOLDER_ID, ищем файл только в этой папке
+                if GOOGLE_DRIVE_FOLDER_ID:
+                    if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                        query += f" and '{GOOGLE_DRIVE_FOLDER_ID}' in parents"
+                
                 # Проверка, существует ли файл с таким именем
                 response = drive_service.files().list(
-                    q=f"name='{file_name}' and trashed=false",
+                    q=query,
                     spaces='drive',
                     fields='files(id, name)'
                 ).execute()
@@ -1053,23 +1548,32 @@ def process_xml(use_gdrive_for_images=True):
         else:
             return pd.DataFrame(), None
     
-    # Создаем DataFrame для предварительного просмотра
-    df = pd.DataFrame(data)
+    # Создаем DataFrame для новых данных
+    new_df = pd.DataFrame(data)
+    
+    # Создаем дубли строк с изменением ID и адреса только для новых товаров
+    duplicated_df = duplicate_rows(new_df)
+    
+    # Объединяем с существующими данными, если они есть
+    final_df = duplicated_df
+    if existing_data is not None and not existing_data.empty:
+        print(f"Объединяем {len(duplicated_df)} новых строк (с дубликатами) с {len(existing_data)} существующими строками")
+        final_df = pd.concat([existing_data, duplicated_df], ignore_index=True)
     
     # Выводим информацию о созданном DataFrame
-    print(f"Создан DataFrame с {len(df)} строками и {len(df.columns)} столбцами")
+    print(f"Итоговый DataFrame содержит {len(final_df)} строк и {len(final_df.columns)} столбцов")
     print("Столбцы в DataFrame:")
-    for i, col in enumerate(df.columns):
+    for i, col in enumerate(final_df.columns):
         print(f"{i+1}. {col}")
     
     # Проверяем, есть ли в DataFrame нужные столбцы
     for param in standard_parameters:
-        if param not in df.columns:
+        if param not in final_df.columns:
             print(f"Внимание: Столбец '{param}' отсутствует в DataFrame! Добавляем его...")
-            df[param] = ""  # Добавляем пустой столбец
+            final_df[param] = ""  # Добавляем пустой столбец
     
     # Создаем Excel-файл без вставки изображений, только ссылки
-    excel_path, was_updated = save_to_excel(df)
+    excel_path, was_updated = save_to_excel(final_df)
     
     # Загружаем файл на Google Drive только если он был обновлен
     if was_updated:
@@ -1080,94 +1584,12 @@ def process_xml(use_gdrive_for_images=True):
         file_url = upload_to_google_drive(excel_path, force_update=False)
         print(f"Таблица не изменилась, используем существующую ссылку")
     
-    return df, file_url
+    return final_df, file_url
 
 # Создаем алиас для запуска с Google Drive для изображений
 def process_xml_with_gdrive():
     """Обработка XML-файла с загрузкой изображений на Google Drive"""
     return process_xml(use_gdrive_for_images=True)
-
-def add_image(product_id, image_url, output_dir=None, gdrive_service=None):
-    """
-    Добавляет изображение к существующему товару в Excel-таблице
-    
-    Args:
-        product_id (str): ID товара
-        image_url (str): URL изображения для добавления
-        output_dir (str, optional): Директория для сохранения обработанных изображений
-        gdrive_service (object, optional): Сервис Google Drive для загрузки изображений
-        
-    Returns:
-        bool: True, если изображение успешно добавлено, иначе False
-    """
-    if output_dir is None:
-        output_dir = create_output_dir()
-        
-    try:
-        # Загружаем существующую таблицу
-        if not os.path.exists(OUTPUT_EXCEL_PATH):
-            print(f"Файл {OUTPUT_EXCEL_PATH} не найден")
-            return False
-            
-        existing_data = pd.read_excel(OUTPUT_EXCEL_PATH)
-        
-        # Ищем товар по ID
-        product_mask = existing_data['Id'] == product_id
-        if not any(product_mask):
-            print(f"Товар с ID {product_id} не найден в таблице")
-            return False
-            
-        product_index = existing_data.index[product_mask][0]
-        
-        # Получаем текущие URL изображений
-        current_images = existing_data.at[product_index, 'ImageUrls']
-        current_images = str(current_images) if pd.notna(current_images) else ""
-        
-        # Обрабатываем новое изображение
-        try:
-            # Создаем объект ad_element с изображением для передачи в process_image_urls
-            image_urls = [image_url]
-            
-            # Обрабатываем изображения
-            processed_images = process_image_urls(image_urls, output_dir, product_id, gdrive_service)
-            
-            if not processed_images:
-                print(f"Не удалось обработать изображение {image_url}")
-                return False
-                
-            # Получаем URL обработанного изображения
-            processed_url = processed_images[0]
-            
-            # Если у товара еще нет изображений, просто добавляем новое
-            if not current_images or current_images == "nan" or current_images.strip() == "":
-                existing_data.at[product_index, 'ImageUrls'] = processed_url
-            else:
-                # Добавляем новое изображение к существующим
-                image_list = current_images.split("|")
-                
-                # Проверяем, не дублируется ли URL (это может быть, если изображение уже было добавлено)
-                if processed_url not in image_list:
-                    image_list.append(processed_url)
-                    existing_data.at[product_index, 'ImageUrls'] = "|".join(image_list)
-                else:
-                    print(f"Изображение {processed_url} уже существует для товара {product_id}")
-            
-            # Сохраняем обновленные данные обратно в Excel
-            existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
-            
-            # Обновляем файл на Google Drive
-            upload_to_google_drive(OUTPUT_EXCEL_PATH)
-            
-            print(f"Изображение успешно добавлено к товару {product_id}")
-            return True
-            
-        except Exception as e:
-            print(f"Ошибка при обработке изображения: {e}")
-            return False
-            
-    except Exception as e:
-        print(f"Ошибка при добавлении изображения к товару {product_id}: {e}")
-        return False
 
 def job():
     """Основная функция для запуска процесса обработки"""
@@ -1176,13 +1598,83 @@ def job():
     # Сначала скачиваем актуальную версию Excel
     sync_excel_from_gdrive()
     
+    # Проверяем консистентность товаров в Excel
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        print("Проверка консистентности товаров в Excel...")
+        check_excel_consistency()
+    
     if download_xml():
         df, file_url = process_xml_with_gdrive()
         print(f"Ссылка на обработанный документ: {file_url}")
     print(f"Обработка завершена: {datetime.now()}")
 
+def check_folder_access(drive_service, folder_id):
+    """
+    Проверяет доступ к папке на Google Drive и устанавливает права доступа если необходимо
+    
+    drive_service: Инициализированный сервис Google Drive API
+    folder_id: ID папки на Google Drive
+    
+    Возвращает: True если папка доступна, False если нет
+    """
+    if not folder_id:
+        return False
+        
+    try:
+        # Проверяем существование папки
+        folder = drive_service.files().get(fileId=folder_id, fields='id, name').execute()
+        print(f"Папка найдена: {folder.get('name')} (ID: {folder.get('id')})")
+        
+        # Проверяем права доступа
+        permissions = drive_service.permissions().list(fileId=folder_id).execute()
+        
+        # Проверяем, есть ли публичный доступ
+        has_public_access = False
+        for permission in permissions.get('permissions', []):
+            if permission.get('type') == 'anyone':
+                has_public_access = True
+                break
+                
+        # Если нет публичного доступа, устанавливаем его
+        if not has_public_access:
+            print("Устанавливаем публичный доступ на папку...")
+            drive_service.permissions().create(
+                fileId=folder_id,
+                body={
+                    'type': 'anyone',
+                    'role': 'writer',
+                }
+            ).execute()
+            print("Права доступа установлены")
+            
+        return True
+    except Exception as e:
+        print(f"Ошибка при проверке доступа к папке: {e}")
+        return False
+
 def main():
     """Основная функция для запуска скрипта"""
+    # Проверяем доступ к папке Google Drive, если указан ID
+    if GOOGLE_DRIVE_FOLDER_ID:
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                GOOGLE_CRED_PATH, 
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            drive_service = build('drive', 'v3', credentials=credentials)
+            
+            # Проверяем доступ к папке
+            if not check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                print(f"ВНИМАНИЕ: Не удалось получить доступ к папке с ID {GOOGLE_DRIVE_FOLDER_ID}")
+                print("Будет использоваться автоматическое создание папки или корневая папка")
+        except Exception as e:
+            print(f"Ошибка при проверке доступа к папке Google Drive: {e}")
+    
+    # Проверяем консистентность товаров в Excel перед началом работы
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        print("Проверка консистентности товаров в Excel перед началом работы...")
+        check_excel_consistency()
+    
     # Сначала запускаем обработку однократно
     job()
     
@@ -1193,6 +1685,367 @@ def main():
     while True:
         schedule.run_pending()
         time.sleep(60)  # Проверка каждую минуту
+
+def clean_orphaned_derived_products(existing_data):
+    """
+    Удаляет производные товары (с суффиксами), если их базовый товар был удален
+    
+    existing_data: DataFrame с существующими товарами
+    
+    Возвращает: очищенный DataFrame и флаг, были ли изменения
+    """
+    if existing_data is None or existing_data.empty or 'Id' not in existing_data.columns:
+        return existing_data, False
+    
+    # Получаем все ID из DataFrame
+    all_ids = existing_data['Id'].astype(str).tolist()
+    
+    # Разделяем на базовые и производные ID
+    base_ids = set()
+    derived_ids_map = {}  # Словарь, связывающий производные ID с их базовыми ID
+    
+    for product_id in all_ids:
+        if "-" not in product_id:
+            base_ids.add(product_id)
+        else:
+            # Это производный ID
+            base_id = product_id.split("-")[0]
+            derived_ids_map[product_id] = base_id
+    
+    # Проверяем каждый производный ID
+    orphaned_ids = []
+    for derived_id, base_id in derived_ids_map.items():
+        if base_id not in base_ids:
+            orphaned_ids.append(derived_id)
+    
+    if orphaned_ids:
+        print(f"Найдено {len(orphaned_ids)} производных товаров без базового товара")
+        # Группируем по базовым ID для логирования
+        orphaned_by_base = {}
+        for orphaned_id in orphaned_ids:
+            base_id = orphaned_id.split("-")[0]
+            if base_id not in orphaned_by_base:
+                orphaned_by_base[base_id] = []
+            orphaned_by_base[base_id].append(orphaned_id)
+        
+        # Выводим информацию по группам
+        for base_id, orphans in orphaned_by_base.items():
+            print(f"Базовый товар {base_id} отсутствует, удаляем его производные: {orphans}")
+        
+        # Удаляем строки с устаревшими производными товарами
+        old_len = len(existing_data)
+        cleaned_data = existing_data[~existing_data['Id'].astype(str).isin(orphaned_ids)]
+        new_len = len(cleaned_data)
+        print(f"Удалено {old_len - new_len} устаревших производных товаров")
+        return cleaned_data, True
+    
+    return existing_data, False
+
+def check_excel_consistency(excel_file_path=OUTPUT_EXCEL_PATH):
+    """
+    Проверяет консистентность в Excel-файле между базовыми товарами и их дублями.
+    Если базовый товар отсутствует, но есть его дубли, они будут удалены.
+    
+    excel_file_path: путь к Excel-файлу
+    
+    Возвращает: True, если были внесены изменения, иначе False
+    """
+    if not os.path.exists(excel_file_path):
+        print(f"Файл {excel_file_path} не существует, проверка не выполнена")
+        return False
+    
+    try:
+        # Загружаем Excel-файл
+        df = pd.read_excel(excel_file_path)
+        print(f"Загружен Excel-файл {excel_file_path}, строк: {len(df)}")
+        
+        if 'Id' not in df.columns:
+            print("В Excel-файле отсутствует столбец 'Id', проверка невозможна")
+            return False
+        
+        # Получаем все ID
+        all_ids = df['Id'].astype(str).tolist()
+        
+        # Разделяем на базовые и производные ID
+        base_ids = set()
+        derived_ids = []
+        
+        for product_id in all_ids:
+            if "-" not in product_id:
+                base_ids.add(product_id)
+            else:
+                derived_ids.append(product_id)
+        
+        # Проверяем каждый производный ID
+        orphaned_ids = []
+        for derived_id in derived_ids:
+            parts = derived_id.split("-")
+            if len(parts) >= 2:
+                base_id = parts[0]
+                if base_id not in base_ids:
+                    orphaned_ids.append(derived_id)
+        
+        if orphaned_ids:
+            print(f"Найдено {len(orphaned_ids)} производных товаров без базового товара")
+            
+            # Группируем по базовым ID для улучшения логирования
+            orphaned_by_base = {}
+            for orphaned_id in orphaned_ids:
+                base_id = orphaned_id.split("-")[0]
+                if base_id not in orphaned_by_base:
+                    orphaned_by_base[base_id] = []
+                orphaned_by_base[base_id].append(orphaned_id)
+            
+            # Выводим информацию по группам
+            for base_id, orphans in orphaned_by_base.items():
+                print(f"Базовый товар {base_id} отсутствует, его производные будут удалены: {orphans}")
+            
+            # Удаляем строки с "осиротевшими" производными ID
+            old_len = len(df)
+            df = df[~df['Id'].astype(str).isin(orphaned_ids)]
+            new_len = len(df)
+            
+            print(f"Удалено {old_len - new_len} строк с 'осиротевшими' производными товарами")
+            
+            # Сохраняем обновленный Excel-файл
+            df.to_excel(excel_file_path, index=False)
+            print(f"Обновленный Excel-файл сохранен: {excel_file_path}")
+            
+            # Загружаем на Google Drive
+            file_url = upload_to_google_drive(excel_file_path, force_update=True)
+            if file_url:
+                print(f"Обновленный Excel-файл загружен на Google Drive: {file_url}")
+            
+            return True
+        else:
+            print("В Excel-файле нет 'осиротевших' производных товаров")
+            return False
+        
+    except Exception as e:
+        print(f"Ошибка при проверке консистентности Excel-файла: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def uniqualize_image(input_image_path_or_url, output_path, city_index):
+    """
+    Создает уникализированную версию изображения, изменяя метаданные и визуальные параметры
+    
+    input_image_path_or_url: путь к исходному изображению или URL
+    output_path: путь для сохранения уникализированного изображения
+    city_index: индекс города, используется для вариации параметров
+    
+    Возвращает: путь к уникализированному изображению
+    """
+    try:
+        print(f"Уникализация изображения для города с индексом {city_index}")
+        
+        # Определяем, является ли вход URL или локальным путем
+        is_url = input_image_path_or_url.startswith('http')
+        
+        if is_url:
+            # Загрузка изображения из URL
+            response = requests.get(input_image_path_or_url)
+            if response.status_code != 200:
+                print(f"Ошибка загрузки изображения по URL {input_image_path_or_url}, код: {response.status_code}")
+                return None
+                
+            img = PILImage.open(BytesIO(response.content))
+        else:
+            # Загрузка локального изображения
+            img = PILImage.open(input_image_path_or_url)
+        
+        # Конвертируем в RGB, если это не RGB
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # 1. Изменение контраста и яркости
+        # Используем индекс города для вариации параметров
+        contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05  # Варьируется от 1.05 до 1.15
+        brightness_factor = 1.0 + (city_index % 5 - 2) * 0.02  # Варьируется от 0.96 до 1.04
+        
+        # Применяем изменения контраста
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(contrast_factor)
+        
+        # Применяем изменения яркости
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(brightness_factor)
+        
+        # 2. Добавление шума
+        # Создаем массив NumPy из изображения
+        img_array = np.array(img)
+        
+        # Генерируем шум на основе индекса города
+        noise_level = (city_index % 4 + 2) * 2  # Варьируется от 4 до 10
+        noise = np.random.normal(0, noise_level, img_array.shape)
+        
+        # Применяем шум к изображению
+        noisy_img_array = np.clip(img_array + noise, 0, 255).astype(np.uint8)
+        img = PILImage.fromarray(noisy_img_array)
+        
+        # 3. Легкое размытие (для некоторых изображений)
+        if city_index % 3 == 0:
+            blur_radius = (city_index % 2) * 0.3 + 0.1  # Варьируется от 0.1 до 0.4
+            img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        
+        # 4. Небольшой поворот для некоторых изображений
+        if city_index % 4 == 0:
+            rotation_angle = (city_index % 3 - 1) * 0.5  # Варьируется от -0.5 до 0.5 градусов
+            img = img.rotate(rotation_angle, resample=PILImage.BICUBIC, expand=False)
+        
+        # Сохраняем измененное изображение
+        img.save(output_path, quality=95)
+        
+        # 5. Изменение метаданных (EXIF)
+        try:
+            # Создаем базовые EXIF данные
+            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}}
+            
+            # Устанавливаем дату создания (сдвигаем на 1-2 дня относительно текущей)
+            days_shift = city_index % 3 + 1  # 1, 2 или 3 дня
+            creation_date = (datetime.now() - timedelta(days=days_shift)).strftime("%Y:%m:%d %H:%M:%S")
+            exif_dict['0th'][piexif.ImageIFD.DateTime] = creation_date
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = creation_date
+            
+            # Варьируем имя камеры
+            camera_models = [
+                "iPhone 13", "Samsung Galaxy S21", "Google Pixel 6", 
+                "Xiaomi Mi 11", "Sony Alpha", "Canon EOS R5"
+            ]
+            camera_model = camera_models[city_index % len(camera_models)]
+            exif_dict['0th'][piexif.ImageIFD.Model] = camera_model
+            
+            # Варьируем производителя
+            manufacturers = ["Apple", "Samsung", "Google", "Xiaomi", "Sony", "Canon"]
+            manufacturer = manufacturers[city_index % len(manufacturers)]
+            exif_dict['0th'][piexif.ImageIFD.Make] = manufacturer
+            
+            # Добавляем случайные GPS координаты для некоторых изображений
+            if city_index % 3 == 0:
+                # Координаты некоторых городов России (примерные)
+                city_coords = [
+                    (55.7558, 37.6173),  # Москва
+                    (59.9343, 30.3351),  # Санкт-Петербург
+                    (56.8431, 60.6454),  # Екатеринбург
+                    (55.0415, 82.9346),  # Новосибирск
+                    (56.3287, 44.0020),  # Нижний Новгород
+                    (53.1950, 50.1982),  # Самара
+                    (51.5406, 46.0086),  # Саратов
+                    (45.0448, 38.9760)   # Краснодар
+                ]
+                
+                # Выбираем координаты и добавляем небольшое случайное смещение
+                base_lat, base_lon = city_coords[city_index % len(city_coords)]
+                lat = base_lat + (random.random() - 0.5) * 0.01  # Смещение ±0.005 градуса
+                lon = base_lon + (random.random() - 0.5) * 0.01
+                
+                def to_deg(value, loc):
+                    """Конвертирует десятичные градусы в градусы, минуты, секунды в формате рациональных чисел"""
+                    if value < 0:
+                        loc_value = -value
+                    else:
+                        loc_value = value
+                    
+                    deg = int(loc_value)
+                    d = loc_value - deg
+                    min = int(d * 60)
+                    sec = int((d - min / 60) * 3600 * 100)
+                    
+                    # Возвращаем кортежи в формате ((числитель, знаменатель), ...)
+                    return ((deg, 1), (min, 1), (sec, 100))
+                
+                try:
+                    # Добавляем GPS данные в словарь EXIF
+                    exif_dict['GPS'][piexif.GPSIFD.GPSVersionID] = (2, 2, 0, 0)
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = 'N' if lat >= 0 else 'S'
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = 'E' if lon >= 0 else 'W'
+                    
+                    # Преобразуем координаты в формат рациональных чисел
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(abs(lat), 'lat')
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(abs(lon), 'lon')
+                except Exception as e:
+                    print(f"Ошибка при добавлении GPS данных: {e}")
+                    # Удаляем GPS данные, чтобы не вызвать ошибку при сохранении
+                    exif_dict['GPS'] = {}
+            
+            # Собираем EXIF данные и добавляем их к изображению
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                piexif.insert(exif_bytes, output_path)
+                print(f"EXIF метаданные успешно изменены для изображения {output_path}")
+            except Exception as e:
+                print(f"Ошибка при сохранении EXIF данных: {e}")
+                # Если не удалось сохранить все метаданные, пробуем сохранить только основные
+                try:
+                    # Создаем более простой EXIF словарь без GPS данных
+                    simple_exif = {'0th': {}, 'Exif': {}, '1st': {}}
+                    simple_exif['0th'][piexif.ImageIFD.DateTime] = creation_date
+                    simple_exif['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
+                    
+                    exif_bytes = piexif.dump(simple_exif)
+                    piexif.insert(exif_bytes, output_path)
+                    print(f"Упрощенные EXIF метаданные сохранены для изображения {output_path}")
+                except Exception as e2:
+                    print(f"Не удалось сохранить даже упрощенные EXIF метаданные: {e2}")
+            
+        except Exception as e:
+            print(f"Ошибка при изменении EXIF метаданных: {e}")
+            # Продолжаем выполнение, так как изображение уже было сохранено с визуальными изменениями
+        
+        return output_path
+        
+    except Exception as e:
+        print(f"Ошибка при уникализации изображения: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def process_image_for_derived_products(original_image_url, output_dir, base_ad_id, city_index, gdrive_service=None):
+    """
+    Обрабатывает изображение для производных товаров с уникализацией
+    
+    original_image_url: URL исходного изображения
+    output_dir: директория для сохранения обработанных изображений
+    base_ad_id: базовый ID товара
+    city_index: индекс города (для вариации параметров уникализации)
+    gdrive_service: сервис Google Drive API для загрузки
+    
+    Возвращает: URL уникализированного изображения (на Google Drive или локальный путь)
+    """
+    # Формируем уникальное имя файла
+    output_filename = f"{base_ad_id}_derived_{city_index}_{uuid.uuid4().hex[:8]}.jpg"
+    output_path = os.path.join(output_dir, output_filename)
+    
+    # Уникализируем изображение
+    result_path = uniqualize_image(original_image_url, output_path, city_index)
+    
+    if result_path:
+        # Загрузка в Google Drive, если сервис предоставлен
+        if gdrive_service:
+            try:
+                print(f"Начинаем загрузку уникализированного изображения {output_filename} на Google Drive")
+                file_url = upload_image_to_gdrive(gdrive_service, result_path)
+                if file_url:
+                    print(f"Уникализированное изображение {output_filename} загружено в Google Drive: {file_url}")
+                    return file_url
+                else:
+                    print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
+                    # В случае ошибки возвращаем локальный путь
+                    return output_path
+            except Exception as e:
+                print(f"Исключение при загрузке в Google Drive: {e}")
+                import traceback
+                traceback.print_exc()
+                # В случае исключения возвращаем локальный путь
+                return output_path
+        else:
+            # Если Google Drive не используется, возвращаем локальный путь
+            return output_path
+    
+    # В случае ошибки возвращаем исходный URL
+    return original_image_url
 
 if __name__ == "__main__":
     main()
