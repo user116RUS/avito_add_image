@@ -25,31 +25,23 @@ import piexif
 
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
-LOCAL_XML_PATH = "few_cities.xml"
-OUTPUT_EXCEL_PATH = "few_cities.xlsx"
+LOCAL_XML_PATH = "few_cities-7.xml"
+OUTPUT_EXCEL_PATH = "few_cities_7.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999999 # Ограничиваем для демонстрации
-IMAGES_FOLDER_NAME = "cities"  # Название папки для изображений на Google Drive
-GOOGLE_DRIVE_FOLDER_ID = '1rpCeoXFTW68E2BKkJsHNfU2WzryBDcYL'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
+MAX_ITEMS = 1 # Ограничиваем для демонстрации
+IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
+GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Список городов для дублирования
 CITY_LIST = [
-    "Новосибирск",
-    "Екатеринбург",
-    "Казань",
-    "Нижний Новгород",
-    "Челябинск",
-    "Самара",
-    "Омск",
-    "Ростов-на-Дону",
-    "Уфа",
-    "Красноярск",
-    "Пермь",
-    "Воронеж",
-    "Волгоград",
-    "Краснодар",
-    "Саратов"
+    "Керчь",
+    "Нижний Тагил",
+    "Свердловск",
+    "Пятигорск",
+    "Киров",
+    "Орск",
+    "Пенза"
 ]
 
 # Новый текст описания
@@ -513,49 +505,100 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
         existing_data = pd.read_excel(output_path)
         
         # Создаем копию существующих данных
-        merged_df = df.copy()
+        merged_df = existing_data.copy()
         
         # Проверяем новые данные из df на отсутствие в существующей таблице по Id
         if 'Id' in df.columns and 'Id' in existing_data.columns:
             # Получаем список существующих Id
             existing_ids = set(existing_data['Id'].astype(str).tolist())
             
-            # Проверяем, были ли добавлены новые строки
-            new_ids = set(df['Id'].astype(str).tolist()) - existing_ids
+            # Фильтруем новые данные, оставляя только отсутствующие
+            new_rows = df[~df['Id'].astype(str).isin(existing_ids)]
             
-            if len(new_ids) > 0:
-                print(f"Найдено {len(new_ids)} новых ID для добавления")
+            # Если есть новые строки, добавляем их в конец существующей таблицы
+            if len(new_rows) > 0:
+                print(f"Добавление {len(new_rows)} новых строк к существующим {len(existing_data)}")
+                
+                # Добавляем новые строки в конец
+                merged_df = pd.concat([existing_data, new_rows], ignore_index=True)
                 
                 # Сохраняем DataFrame во временный файл Excel
                 temp_output = f"temp_{output_path}"
                 merged_df.to_excel(temp_output, index=False)
                 
-                # Открываем Excel-файл с помощью openpyxl для форматирования
-                wb = openpyxl.load_workbook(temp_output)
-                ws = wb.active
-                
-                # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
-                yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-                
-                # Находим индекс столбца с Id
-                id_col_index = None
-                for i, cell in enumerate(ws[1]):
-                    if cell.value == 'Id':
-                        id_col_index = i + 1  # openpyxl использует индексацию с 1
-                        break
-                
-                if id_col_index:
-                    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):  # Начинаем с 2, пропуская заголовок
-                        cell = row[id_col_index - 1]  # Получаем ячейку с Id
-                        if cell.value and "-" not in str(cell.value):  # Если это исходный товар (без суффикса "-")
-                            for cell in row:
-                                cell.fill = yellow_fill
-                
-                # Сохраняем отформатированный файл
-                wb.save(output_path)
+                try:
+                    # Открываем Excel-файл с помощью openpyxl для форматирования
+                    wb = openpyxl.load_workbook(temp_output)
+                    ws = wb.active
+                    
+                    # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+                    try:
+                        # Пробуем создать стиль заливки стандартным способом
+                        yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                    except Exception as e:
+                        print(f"Ошибка при создании стиля заливки: {e}")
+                        # Альтернативный способ создания заливки
+                        try:
+                            from openpyxl.styles import Fill
+                            yellow_fill = openpyxl.styles.PatternFill(patternType='solid', fgColor='FFFF00')
+                        except Exception as e2:
+                            print(f"Ошибка при создании альтернативного стиля заливки: {e2}")
+                            yellow_fill = None
+                    
+                    # Продолжаем только если удалось создать стиль заливки
+                    if yellow_fill:
+                        # Находим индекс столбца с Id
+                        id_col_index = None
+                        for i, cell in enumerate(ws[1]):
+                            if cell.value == 'Id':
+                                id_col_index = i + 1  # openpyxl использует индексацию с 1
+                                break
+                        
+                        if id_col_index:
+                            # Проходим по всем строкам и заливаем исходные товары
+                            row_count = 0
+                            for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):  # Начинаем с 2, пропуская заголовок
+                                cell = row[id_col_index - 1]  # Получаем ячейку с Id
+                                try:
+                                    if cell.value and "-" not in str(cell.value):  # Если это исходный товар (без суффикса "-")
+                                        for cell in row:
+                                            try:
+                                                cell.fill = yellow_fill
+                                                row_count += 1
+                                            except Exception as cell_e:
+                                                print(f"Ошибка при заливке ячейки: {cell_e}")
+                                                # Альтернативный подход через прямую установку атрибута
+                                                try:
+                                                    cell._style.fill = yellow_fill
+                                                except:
+                                                    pass
+                                except Exception as row_e:
+                                    print(f"Ошибка при обработке строки {row_idx}: {row_e}")
+                            
+                            print(f"Залито желтым цветом {row_count} ячеек в оригинальных строках")
+                    else:
+                        print("Не удалось создать стиль заливки, форматирование не применено")
+                    
+                    # Сохраняем отформатированный файл
+                    try:
+                        wb.save(output_path)
+                        print(f"Отформатированный Excel-файл сохранен: {output_path}")
+                    except Exception as save_e:
+                        print(f"Ошибка при сохранении отформатированного файла: {save_e}")
+                        # Если не удалось сохранить отформатированный файл, используем оригинальный
+                        merged_df.to_excel(output_path, index=False)
+                        print(f"Сохранен неотформатированный Excel-файл: {output_path}")
+                except Exception as format_e:
+                    print(f"Ошибка при форматировании Excel-файла: {format_e}")
+                    # Сохраняем без форматирования
+                    merged_df.to_excel(output_path, index=False)
+                    print(f"Сохранен неотформатированный Excel-файл: {output_path}")
                 
                 # Удаляем временный файл
-                os.remove(temp_output)
+                try:
+                    os.remove(temp_output)
+                except Exception as e:
+                    print(f"Ошибка при удалении временного файла: {e}")
                 
                 return output_path, True  # Файл был обновлен
             else:
@@ -569,32 +612,79 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
             temp_output = f"temp_{output_path}"
             merged_df.to_excel(temp_output, index=False)
             
-            # Открываем Excel-файл с помощью openpyxl для форматирования
-            wb = openpyxl.load_workbook(temp_output)
-            ws = wb.active
-            
-            # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
-            yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-            
-            # Находим индекс столбца с Id
-            id_col_index = None
-            for i, cell in enumerate(ws[1]):
-                if cell.value == 'Id':
-                    id_col_index = i + 1
-                    break
-            
-            if id_col_index:
-                for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-                    cell = row[id_col_index - 1]
-                    if cell.value and "-" not in str(cell.value):
-                        for cell in row:
-                            cell.fill = yellow_fill
-            
-            # Сохраняем отформатированный файл
-            wb.save(output_path)
+            try:
+                # Открываем Excel-файл с помощью openpyxl для форматирования
+                wb = openpyxl.load_workbook(temp_output)
+                ws = wb.active
+                
+                # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+                try:
+                    # Пробуем создать стиль заливки стандартным способом
+                    yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                except Exception as e:
+                    print(f"Ошибка при создании стиля заливки: {e}")
+                    # Альтернативный способ создания заливки
+                    try:
+                        from openpyxl.styles import Fill
+                        yellow_fill = openpyxl.styles.PatternFill(patternType='solid', fgColor='FFFF00')
+                    except Exception as e2:
+                        print(f"Ошибка при создании альтернативного стиля заливки: {e2}")
+                        yellow_fill = None
+                
+                # Продолжаем только если удалось создать стиль заливки
+                if yellow_fill:
+                    # Находим индекс столбца с Id
+                    id_col_index = None
+                    for i, cell in enumerate(ws[1]):
+                        if cell.value == 'Id':
+                            id_col_index = i + 1
+                            break
+                    
+                    if id_col_index:
+                        # Проходим по всем строкам и заливаем исходные товары
+                        row_count = 0
+                        for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+                            cell = row[id_col_index - 1]
+                            try:
+                                if cell.value and "-" not in str(cell.value):
+                                    for cell in row:
+                                        try:
+                                            cell.fill = yellow_fill
+                                            row_count += 1
+                                        except Exception as cell_e:
+                                            print(f"Ошибка при заливке ячейки: {cell_e}")
+                                            # Альтернативный подход
+                                            try:
+                                                cell._style.fill = yellow_fill
+                                            except:
+                                                pass
+                            except Exception as row_e:
+                                print(f"Ошибка при обработке строки {row_idx}: {row_e}")
+                        
+                        print(f"Залито желтым цветом {row_count} ячеек в оригинальных строках")
+                else:
+                    print("Не удалось создать стиль заливки, форматирование не применено")
+                
+                # Сохраняем отформатированный файл
+                try:
+                    wb.save(output_path)
+                    print(f"Отформатированный Excel-файл сохранен: {output_path}")
+                except Exception as save_e:
+                    print(f"Ошибка при сохранении отформатированного файла: {save_e}")
+                    # Если не удалось сохранить отформатированный файл, используем оригинальный
+                    merged_df.to_excel(output_path, index=False)
+                    print(f"Сохранен неотформатированный Excel-файл: {output_path}")
+            except Exception as format_e:
+                print(f"Ошибка при форматировании Excel-файла: {format_e}")
+                # Сохраняем без форматирования
+                merged_df.to_excel(output_path, index=False)
+                print(f"Сохранен неотформатированный Excel-файл: {output_path}")
             
             # Удаляем временный файл
-            os.remove(temp_output)
+            try:
+                os.remove(temp_output)
+            except Exception as e:
+                print(f"Ошибка при удалении временного файла: {e}")
             
             return output_path, True  # Файл был обновлен
     else:
@@ -603,32 +693,79 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
         temp_output = f"temp_{output_path}"
         df.to_excel(temp_output, index=False)
         
-        # Открываем Excel-файл с помощью openpyxl для форматирования
-        wb = openpyxl.load_workbook(temp_output)
-        ws = wb.active
-        
-        # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
-        yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-        
-        # Находим индекс столбца с Id
-        id_col_index = None
-        for i, cell in enumerate(ws[1]):
-            if cell.value == 'Id':
-                id_col_index = i + 1
-                break
-        
-        if id_col_index:
-            for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-                cell = row[id_col_index - 1]
-                if cell.value and "-" not in str(cell.value):
-                    for cell in row:
-                        cell.fill = yellow_fill
-        
-        # Сохраняем отформатированный файл
-        wb.save(output_path)
+        try:
+            # Открываем Excel-файл с помощью openpyxl для форматирования
+            wb = openpyxl.load_workbook(temp_output)
+            ws = wb.active
+            
+            # Заливаем желтым цветом строки с исходными товарами (без суффикса "-")
+            try:
+                # Пробуем создать стиль заливки стандартным способом
+                yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            except Exception as e:
+                print(f"Ошибка при создании стиля заливки: {e}")
+                # Альтернативный способ создания заливки
+                try:
+                    from openpyxl.styles import Fill
+                    yellow_fill = openpyxl.styles.PatternFill(patternType='solid', fgColor='FFFF00')
+                except Exception as e2:
+                    print(f"Ошибка при создании альтернативного стиля заливки: {e2}")
+                    yellow_fill = None
+            
+            # Продолжаем только если удалось создать стиль заливки
+            if yellow_fill:
+                # Находим индекс столбца с Id
+                id_col_index = None
+                for i, cell in enumerate(ws[1]):
+                    if cell.value == 'Id':
+                        id_col_index = i + 1
+                        break
+                
+                if id_col_index:
+                    # Проходим по всем строкам и заливаем исходные товары
+                    row_count = 0
+                    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+                        cell = row[id_col_index - 1]
+                        try:
+                            if cell.value and "-" not in str(cell.value):
+                                for cell in row:
+                                    try:
+                                        cell.fill = yellow_fill
+                                        row_count += 1
+                                    except Exception as cell_e:
+                                        print(f"Ошибка при заливке ячейки: {cell_e}")
+                                        # Альтернативный подход
+                                        try:
+                                            cell._style.fill = yellow_fill
+                                        except:
+                                            pass
+                        except Exception as row_e:
+                            print(f"Ошибка при обработке строки {row_idx}: {row_e}")
+                    
+                    print(f"Залито желтым цветом {row_count} ячеек в оригинальных строках")
+            else:
+                print("Не удалось создать стиль заливки, форматирование не применено")
+            
+            # Сохраняем отформатированный файл
+            try:
+                wb.save(output_path)
+                print(f"Отформатированный Excel-файл сохранен: {output_path}")
+            except Exception as save_e:
+                print(f"Ошибка при сохранении отформатированного файла: {save_e}")
+                # Если не удалось сохранить отформатированный файл, используем оригинальный
+                df.to_excel(output_path, index=False)
+                print(f"Сохранен неотформатированный Excel-файл: {output_path}")
+        except Exception as format_e:
+            print(f"Ошибка при форматировании Excel-файла: {format_e}")
+            # Сохраняем без форматирования
+            df.to_excel(output_path, index=False)
+            print(f"Сохранен неотформатированный Excel-файл: {output_path}")
         
         # Удаляем временный файл
-        os.remove(temp_output)
+        try:
+            os.remove(temp_output)
+        except Exception as e:
+            print(f"Ошибка при удалении временного файла: {e}")
         
         print(f"Создан новый Excel-файл: {output_path}")
         return output_path, True  # Файл был создан
@@ -813,6 +950,26 @@ def sync_excel_from_gdrive():
         traceback.print_exc()
         return False
 
+def clean_uniqualized_images_folder(folder_path):
+    """
+    Очищает папку с уникализированными изображениями после их загрузки на Google Drive
+    
+    folder_path: путь к папке, которую нужно очистить
+    """
+    try:
+        if os.path.exists(folder_path) and os.path.isdir(folder_path):
+            file_count = 0
+            for filename in os.listdir(folder_path):
+                file_path = os.path.join(folder_path, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    file_count += 1
+            print(f"Очищена папка {folder_path}: удалено {file_count} файлов")
+        else:
+            print(f"Папка {folder_path} не существует или не является директорией")
+    except Exception as e:
+        print(f"Ошибка при очистке папки {folder_path}: {e}")
+
 def duplicate_rows(data_frame):
     """
     Создает 15 дублей для каждой строки с изменением ID и адреса
@@ -871,8 +1028,8 @@ def duplicate_rows(data_frame):
         if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
             original_image_urls = row['ImageUrls'].split('|')
         
-        # Создаем 15 дублей с изменениями
-        for i in range(1, 16):
+        # Создаем 7 дублей с изменениями (было 15)
+        for i in range(1, len(CITY_LIST) + 1):
             # Создаем копию строки
             duplicate = row.to_dict()
             
@@ -1006,6 +1163,11 @@ def duplicate_rows(data_frame):
             
             # Добавляем дубль в список всех строк
             all_rows.append(duplicate)
+    
+    # Очищаем папку с уникализированными изображениями после загрузки на Google Drive
+    if gdrive_service:
+        print("Очищаем папку с уникализированными изображениями...")
+        clean_uniqualized_images_folder(unique_images_dir)
     
     # Создаем новый DataFrame из всех строк
     result_df = pd.DataFrame(all_rows)

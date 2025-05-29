@@ -20,6 +20,7 @@ htmlcov/
 processed_images/
 avito_images/
 google_cred.json
+.google_cred.json
 
 
 # Системные файлы
