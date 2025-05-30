@@ -475,6 +475,14 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
                     if file_url:
                         processed_urls.append(file_url)
                         print(f"Изображение {output_filename} загружено в Google Drive: {file_url}")
+                        
+                        # Удаляем локальный файл после успешной загрузки
+                        try:
+                            if os.path.exists(result_path):
+                                os.remove(result_path)
+                                print(f"Локальный файл {result_path} удален после загрузки на Google Drive")
+                        except Exception as e:
+                            print(f"Ошибка при удалении локального файла {result_path}: {e}")
                     else:
                         print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
                         # В случае ошибки загружаем локальный путь как запасной вариант
@@ -1721,6 +1729,13 @@ def process_xml(use_gdrive_for_images=True):
         file_url = upload_to_google_drive(excel_path, force_update=False)
         print(f"Таблица не изменилась, используем существующую ссылку")
     
+    # Удаляем локальные фотографии после успешной загрузки на Google Drive
+    if use_gdrive_for_images and gdrive_service:
+        print("Удаление локальных фотографий из папки uniqualized_images...")
+        delete_local_images("uniqualized_images")
+        print("Удаление локальных фотографий из папки processed_images...")
+        delete_local_images(output_dir)
+    
     return final_df, file_url
 
 # Создаем алиас для запуска с Google Drive для изображений
@@ -1743,6 +1758,12 @@ def job():
     if download_xml():
         df, file_url = process_xml_with_gdrive()
         print(f"Ссылка на обработанный документ: {file_url}")
+        
+    # Удаляем локальные фотографии после завершения обработки
+    print("Очистка временных файлов...")
+    delete_local_images("uniqualized_images")
+    delete_local_images("processed_images")
+    
     print(f"Обработка завершена: {datetime.now()}")
 
 def check_folder_access(drive_service, folder_id):
@@ -2165,6 +2186,15 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
                 file_url = upload_image_to_gdrive(gdrive_service, result_path)
                 if file_url:
                     print(f"Уникализированное изображение {output_filename} загружено в Google Drive: {file_url}")
+                    
+                    # Удаляем локальный файл после успешной загрузки
+                    try:
+                        if os.path.exists(result_path):
+                            os.remove(result_path)
+                            print(f"Локальный файл {result_path} удален после загрузки на Google Drive")
+                    except Exception as e:
+                        print(f"Ошибка при удалении локального файла {result_path}: {e}")
+                    
                     return file_url
                 else:
                     print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
@@ -2182,6 +2212,33 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     
     # В случае ошибки возвращаем исходный URL
     return original_image_url
+
+def delete_local_images(folder_path):
+    """
+    Удаляет все изображения из указанной папки
+    
+    folder_path: путь к папке с изображениями для удаления
+    """
+    try:
+        if not os.path.exists(folder_path):
+            print(f"Папка {folder_path} не существует, нечего удалять")
+            return
+            
+        count = 0
+        for filename in os.listdir(folder_path):
+            if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                file_path = os.path.join(folder_path, filename)
+                try:
+                    os.remove(file_path)
+                    count += 1
+                except Exception as e:
+                    print(f"Ошибка при удалении файла {file_path}: {e}")
+        
+        print(f"Удалено {count} изображений из папки {folder_path}")
+    except Exception as e:
+        print(f"Ошибка при удалении изображений из папки {folder_path}: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
