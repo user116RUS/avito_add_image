@@ -28,7 +28,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = "few_cities_7.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999999 # Ограничиваем для демонстрации
+MAX_ITEMS = 7 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
 GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -950,26 +950,6 @@ def sync_excel_from_gdrive():
         traceback.print_exc()
         return False
 
-def clean_uniqualized_images_folder(folder_path):
-    """
-    Очищает папку с уникализированными изображениями после их загрузки на Google Drive
-    
-    folder_path: путь к папке, которую нужно очистить
-    """
-    try:
-        if os.path.exists(folder_path) and os.path.isdir(folder_path):
-            file_count = 0
-            for filename in os.listdir(folder_path):
-                file_path = os.path.join(folder_path, filename)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-                    file_count += 1
-            print(f"Очищена папка {folder_path}: удалено {file_count} файлов")
-        else:
-            print(f"Папка {folder_path} не существует или не является директорией")
-    except Exception as e:
-        print(f"Ошибка при очистке папки {folder_path}: {e}")
-
 def duplicate_rows(data_frame):
     """
     Создает 15 дублей для каждой строки с изменением ID и адреса
@@ -1028,8 +1008,8 @@ def duplicate_rows(data_frame):
         if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
             original_image_urls = row['ImageUrls'].split('|')
         
-        # Создаем 7 дублей с изменениями (было 15)
-        for i in range(1, len(CITY_LIST) + 1):
+        # Создаем 7 дублей с изменениями
+        for i in range(1, 8):
             # Создаем копию строки
             duplicate = row.to_dict()
             
@@ -1163,11 +1143,6 @@ def duplicate_rows(data_frame):
             
             # Добавляем дубль в список всех строк
             all_rows.append(duplicate)
-    
-    # Очищаем папку с уникализированными изображениями после загрузки на Google Drive
-    if gdrive_service:
-        print("Очищаем папку с уникализированными изображениями...")
-        clean_uniqualized_images_folder(unique_images_dir)
     
     # Создаем новый DataFrame из всех строк
     result_df = pd.DataFrame(all_rows)
@@ -2086,16 +2061,15 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             
             # Добавляем случайные GPS координаты для некоторых изображений
             if city_index % 3 == 0:
-                # Координаты некоторых городов России (примерные)
+                # Координаты новых городов России (примерные)
                 city_coords = [
-                    (55.7558, 37.6173),  # Москва
-                    (59.9343, 30.3351),  # Санкт-Петербург
-                    (56.8431, 60.6454),  # Екатеринбург
-                    (55.0415, 82.9346),  # Новосибирск
-                    (56.3287, 44.0020),  # Нижний Новгород
-                    (53.1950, 50.1982),  # Самара
-                    (51.5406, 46.0086),  # Саратов
-                    (45.0448, 38.9760)   # Краснодар
+                    (45.3531, 36.4743),  # Керчь
+                    (57.9194, 59.9651),  # Нижний Тагил
+                    (56.8431, 60.6454),  # Свердловск (Екатеринбург)
+                    (44.0486, 43.0594),  # Пятигорск
+                    (58.6035, 49.6668),  # Киров
+                    (51.2290, 58.4762),  # Орск
+                    (53.1952, 45.0153)   # Пенза
                 ]
                 
                 # Выбираем координаты и добавляем небольшое случайное смещение
