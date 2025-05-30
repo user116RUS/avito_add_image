@@ -28,7 +28,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = "few_cities_7.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 7 # Ограничиваем для демонстрации
+MAX_ITEMS = 1 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
 GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -36,7 +36,7 @@ SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэшир�
 # Список городов для дублирования
 CITY_LIST = [
     "Керчь",
-    "Нижний Тагил",
+    "Нижний Тагил", 
     "Свердловск",
     "Пятигорск",
     "Киров",
@@ -475,14 +475,6 @@ def process_image_urls(original_urls, output_dir, ad_id, gdrive_service=None, sh
                     if file_url:
                         processed_urls.append(file_url)
                         print(f"Изображение {output_filename} загружено в Google Drive: {file_url}")
-                        
-                        # Удаляем локальный файл после успешной загрузки
-                        try:
-                            if os.path.exists(result_path):
-                                os.remove(result_path)
-                                print(f"Локальный файл {result_path} удален после загрузки на Google Drive")
-                        except Exception as e:
-                            print(f"Ошибка при удалении локального файла {result_path}: {e}")
                     else:
                         print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
                         # В случае ошибки загружаем локальный путь как запасной вариант
@@ -958,9 +950,40 @@ def sync_excel_from_gdrive():
         traceback.print_exc()
         return False
 
+def clean_uniqualized_images_folder():
+    """Очищает папку uniqualized_images после загрузки всех изображений"""
+    unique_images_dir = "uniqualized_images"
+    
+    if os.path.exists(unique_images_dir):
+        try:
+            # Получаем список всех файлов в папке
+            files = os.listdir(unique_images_dir)
+            deleted_count = 0
+            
+            for file in files:
+                file_path = os.path.join(unique_images_dir, file)
+                try:
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Ошибка при удалении файла {file_path}: {e}")
+            
+            # Пытаемся удалить саму папку, если она пустая
+            try:
+                os.rmdir(unique_images_dir)
+                print(f"Папка {unique_images_dir} успешно очищена и удалена. Удалено файлов: {deleted_count}")
+            except OSError:
+                print(f"Папка {unique_images_dir} очищена (удалено файлов: {deleted_count}), но не удалена (возможно, не пустая)")
+                
+        except Exception as e:
+            print(f"Ошибка при очистке папки {unique_images_dir}: {e}")
+    else:
+        print(f"Папка {unique_images_dir} не существует, очистка не требуется")
+
 def duplicate_rows(data_frame):
     """
-    Создает 15 дублей для каждой строки с изменением ID и адреса
+    Создает 7 дублей для каждой строки с изменением ID и адреса
     
     data_frame: DataFrame с исходными данными
     
@@ -1008,9 +1031,6 @@ def duplicate_rows(data_frame):
         # Получаем исходный ID
         original_id = row['Id']
         
-        # Проверяем, начинается ли ID с "bz" (оригинальный товар)
-        is_original_product = str(original_id).startswith("bz")
-        
         # Получаем список URL изображений, если они есть
         original_image_urls = []
         if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
@@ -1035,25 +1055,27 @@ def duplicate_rows(data_frame):
                 
                 # Различные варианты начала текста с доставкой
                 delivery_variations = [
-                    "<p>🚚<strong>Доставка по РФ</strong>",
-                    "<p>🚚<strong>Доставка по РФ </strong>",
-                    '<p>🚚<strong>Доставка по РФ</strong>'
+                    "<p><strong>Автозапчасти на Волнянского</strong>",
+                    "<p><strong>Автозапчасти на Волнянского </strong>",
+                    '<p><strong>Автозапчасти на Волнянского</strong>'
                 ]
                 
                 # Различные варианты текста с артикулом
                 article_variations = [
-                    "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>",
-                    "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>",
-                    '<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong>'
+                    "<p>📞Звоните или напишите нам в чат",
+                    "<p>📞Звоните или напишите нам в чат",
+                    '<p>📞Звоните или напишите нам в чат'
                 ]
                 
                 # Текст для поиска (полные блоки)
-                old_text_1 = "<p>🚚<strong>Доставка по РФ</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p>"
-                old_text_2 = "<p>❗️❗️<strong>Не знаете артикул или какая запчасть точно нужна?</strong><br /> Присылайте фото или свой вопрос по запчасти, мы подберем нужную запчасть</p>"
+                old_text_1 = "<p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>"
+                old_text_2 = "<p>📞Звоните или напишите нам в чат, чтобы уточнить по наличию запчасти в магазине. Если нужной детали нет, доставим в магазин за 2 часа (крупные детали до 2-х дн).</p>"
                 
                 # Новый текст с указанием города
-                new_text = f"""<p>🚚<strong> Доставка в {city}</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p>
-<p>📍В наличии на складе в г. Тула, улица Волнянского, 1</p>"""
+                new_text = f"""<p>🚚<strong> Доставка в {city}</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p><p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>
+<p>✔ У нас дешевле, чем в крупных интернет магазинах<br /> ✔ Гарантия до 3-х лет (срок зависит от вида и бренда запчасти)<br /> ✔ Быстрый и легкий возврат товара из наличия в любое время<br /> ✔ Дисконтная карта со скидкой 7% при покупке от 10 тыс. руб.<br /> ✔ Найдем запчасти даже без вин!<br /> <br /> <strong>📣Скидка 5%</strong> на товары в нашем магазине по адресу: г.Тула, ул. Волнянского, 1. (кроме представленных на Avito)</p>
+<p>📍В наличии на складе в г. Тула, улица Волнянского, 1</p>
+<p>📞Звоните или напишите нам в чат, чтобы уточнить по наличию запчасти в магазине. Если нужной детали нет, доставим в магазин за 2 часа (крупные детали до 2-х дн).</p>"""
                 
                 # Метод 1: Попытка заменить полные блоки
                 if old_text_1 in description and old_text_2 in description:
@@ -1073,24 +1095,24 @@ def duplicate_rows(data_frame):
                     start_idx = -1
                     end_idx = -1
                     
-                    # Ищем начало текста с доставкой
+                    # Ищем начало текста с автозапчастями
                     for variation in delivery_variations:
                         if variation in description:
                             start_idx = description.find(variation)
                             break
                     
-                    # Если нашли начало, ищем конец блока с артикулом
+                    # Если нашли начало, ищем конец блока с телефоном
                     if start_idx != -1:
-                        # Ищем начало блока с артикулом
+                        # Ищем начало блока с телефоном
                         article_start_idx = -1
                         for variation in article_variations:
                             if variation in description[start_idx:]:
                                 article_start_idx = description.find(variation, start_idx)
                                 break
                         
-                        # Если нашли артикул, ищем его конец
+                        # Если нашли телефон, ищем его конец
                         if article_start_idx != -1:
-                            # Ищем конец абзаца после артикула
+                            # Ищем конец абзаца после телефона
                             article_end_idx = description.find("</p>", article_start_idx)
                             if article_end_idx != -1:
                                 end_idx = article_end_idx + 4  # +4 для включения </p>
@@ -1121,26 +1143,21 @@ def duplicate_rows(data_frame):
                 print(f"Для товара {duplicate['Id']}: найдено {len(product_images)} изображений продукта и {len(shop_images)} изображений магазина")
                 
                 # Обрабатываем изображения продукта
-                if is_original_product:
-                    # Для оригинальных товаров не уникализируем изображения
-                    print(f"Товар {duplicate['Id']} является дублем оригинального товара, сохраняем оригинальные изображения")
-                    unique_image_urls = product_images
-                else:
-                    # Для дублей неоригинальных товаров уникализируем изображения
-                    print(f"Товар {duplicate['Id']} не является дублем оригинального товара, уникализируем изображения")
-                    for j, img_url in enumerate(product_images):
-                        unique_url = process_image_for_derived_products(
-                            img_url, 
-                            unique_images_dir, 
-                            original_id, 
-                            city_index + j,  # Добавляем j для большей вариации
-                            gdrive_service
-                        )
-                        if unique_url:
-                            unique_image_urls.append(unique_url)
-                        else:
-                            # Если уникализация не удалась, используем исходный URL
-                            unique_image_urls.append(img_url)
+                # Для дублей товаров (товары с суффиксами -1, -2 и т.д.) уникализируем изображения
+                print(f"Товар {duplicate['Id']} является дублем, уникализируем изображения для города")
+                for j, img_url in enumerate(product_images):
+                    unique_url = process_image_for_derived_products(
+                        img_url, 
+                        unique_images_dir, 
+                        original_id, 
+                        city_index + j,  # Добавляем j для большей вариации
+                        gdrive_service
+                    )
+                    if unique_url:
+                        unique_image_urls.append(unique_url)
+                    else:
+                        # Если уникализация не удалась, используем исходный URL
+                        unique_image_urls.append(img_url)
                 
                 # Добавляем изображения магазина без изменений
                 unique_image_urls.extend(shop_images)
@@ -1154,6 +1171,9 @@ def duplicate_rows(data_frame):
     
     # Создаем новый DataFrame из всех строк
     result_df = pd.DataFrame(all_rows)
+    
+    # Очищаем папку с уникализированными изображениями после завершения всех операций
+    clean_uniqualized_images_folder()
     
     print(f"Создано {len(result_df)} строк (исходные + дубли)")
     return result_df
@@ -1729,13 +1749,6 @@ def process_xml(use_gdrive_for_images=True):
         file_url = upload_to_google_drive(excel_path, force_update=False)
         print(f"Таблица не изменилась, используем существующую ссылку")
     
-    # Удаляем локальные фотографии после успешной загрузки на Google Drive
-    if use_gdrive_for_images and gdrive_service:
-        print("Удаление локальных фотографий из папки uniqualized_images...")
-        delete_local_images("uniqualized_images")
-        print("Удаление локальных фотографий из папки processed_images...")
-        delete_local_images(output_dir)
-    
     return final_df, file_url
 
 # Создаем алиас для запуска с Google Drive для изображений
@@ -1758,12 +1771,6 @@ def job():
     if download_xml():
         df, file_url = process_xml_with_gdrive()
         print(f"Ссылка на обработанный документ: {file_url}")
-        
-    # Удаляем локальные фотографии после завершения обработки
-    print("Очистка временных файлов...")
-    delete_local_images("uniqualized_images")
-    delete_local_images("processed_images")
-    
     print(f"Обработка завершена: {datetime.now()}")
 
 def check_folder_access(drive_service, folder_id):
@@ -2082,15 +2089,16 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             
             # Добавляем случайные GPS координаты для некоторых изображений
             if city_index % 3 == 0:
-                # Координаты новых городов России (примерные)
+                # Координаты некоторых городов России (примерные)
                 city_coords = [
-                    (45.3531, 36.4743),  # Керчь
-                    (57.9194, 59.9651),  # Нижний Тагил
-                    (56.8431, 60.6454),  # Свердловск (Екатеринбург)
-                    (44.0486, 43.0594),  # Пятигорск
-                    (58.6035, 49.6668),  # Киров
-                    (51.2290, 58.4762),  # Орск
-                    (53.1952, 45.0153)   # Пенза
+                    (55.7558, 37.6173),  # Москва
+                    (59.9343, 30.3351),  # Санкт-Петербург
+                    (56.8431, 60.6454),  # Екатеринбург
+                    (55.0415, 82.9346),  # Новосибирск
+                    (56.3287, 44.0020),  # Нижний Новгород
+                    (53.1950, 50.1982),  # Самара
+                    (51.5406, 46.0086),  # Саратов
+                    (45.0448, 38.9760)   # Краснодар
                 ]
                 
                 # Выбираем координаты и добавляем небольшое случайное смещение
@@ -2186,15 +2194,6 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
                 file_url = upload_image_to_gdrive(gdrive_service, result_path)
                 if file_url:
                     print(f"Уникализированное изображение {output_filename} загружено в Google Drive: {file_url}")
-                    
-                    # Удаляем локальный файл после успешной загрузки
-                    try:
-                        if os.path.exists(result_path):
-                            os.remove(result_path)
-                            print(f"Локальный файл {result_path} удален после загрузки на Google Drive")
-                    except Exception as e:
-                        print(f"Ошибка при удалении локального файла {result_path}: {e}")
-                    
                     return file_url
                 else:
                     print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
@@ -2212,33 +2211,6 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     
     # В случае ошибки возвращаем исходный URL
     return original_image_url
-
-def delete_local_images(folder_path):
-    """
-    Удаляет все изображения из указанной папки
-    
-    folder_path: путь к папке с изображениями для удаления
-    """
-    try:
-        if not os.path.exists(folder_path):
-            print(f"Папка {folder_path} не существует, нечего удалять")
-            return
-            
-        count = 0
-        for filename in os.listdir(folder_path):
-            if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                file_path = os.path.join(folder_path, filename)
-                try:
-                    os.remove(file_path)
-                    count += 1
-                except Exception as e:
-                    print(f"Ошибка при удалении файла {file_path}: {e}")
-        
-        print(f"Удалено {count} изображений из папки {folder_path}")
-    except Exception as e:
-        print(f"Ошибка при удалении изображений из папки {folder_path}: {e}")
-        import traceback
-        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
