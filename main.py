@@ -28,7 +28,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = "few_cities_7.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999999 # Ограничиваем для демонстрации
+MAX_ITEMS = 2 # Ограничиваем для демонстрации
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
 GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -1426,6 +1426,20 @@ def process_xml(use_gdrive_for_images=True):
                     description.text = description.text[:start_idx] + "</p>"
                     print(f"Удален частичный нежелательный текст из описания товара {ad.find('Id').text if ad.find('Id') is not None else 'без ID'}")
     
+    # Обновляем поля Price и Brand для существующих записей
+    price_brand_updated = False
+    if existing_data is not None and not existing_data.empty:
+        existing_data, price_brand_updated = update_existing_records(existing_data, root)
+        
+        # Если были обновления, сохраняем файл
+        if price_brand_updated:
+            existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
+            print(f"Сохранены обновленные Price и Brand в {OUTPUT_EXCEL_PATH}")
+            
+            # Загружаем обновленную таблицу на Google Drive
+            file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+            print(f"Обновленная таблица с новыми Price и Brand загружена на Google Drive")
+    
     # Сбор всех возможных параметров из ВСЕХ объявлений XML (не только тех, которые будут обрабатываться)
     all_parameters = set()
     print("Сбор всех возможных параметров из объявлений...")
@@ -2211,6 +2225,78 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     
     # В случае ошибки возвращаем исходный URL
     return original_image_url
+
+def update_existing_records(existing_data, xml_root):
+    """
+    Обновляет поля Price и Brand для существующих записей на основе данных из XML
+    
+    existing_data: DataFrame с существующими данными
+    xml_root: корневой элемент XML дерева
+    
+    Возвращает: обновленный DataFrame и флаг изменений
+    """
+    if existing_data is None or existing_data.empty:
+        return existing_data, False
+    
+    print("Обновление полей Price и Brand для существующих товаров...")
+    
+    # Создаем словарь для быстрого поиска данных из XML
+    xml_data = {}
+    for ad in xml_root.findall("Ad"):
+        ad_id_elem = ad.find("Id")
+        if ad_id_elem is not None and ad_id_elem.text is not None:
+            ad_id = ad_id_elem.text
+            
+            # Извлекаем Price и Brand из XML
+            price_elem = ad.find("Price")
+            brand_elem = ad.find("Brand")
+            
+            xml_data[ad_id] = {
+                'Price': price_elem.text if price_elem is not None and price_elem.text else "",
+                'Brand': brand_elem.text if brand_elem is not None and brand_elem.text else ""
+            }
+    
+    changes_made = False
+    updated_count = 0
+    
+    # Обновляем данные в existing_data
+    for index, row in existing_data.iterrows():
+        row_id = str(row['Id'])
+        
+        # Определяем базовый ID (без суффикса для дублей)
+        base_id = row_id.split('-')[0] if '-' in row_id else row_id
+        
+        # Проверяем, есть ли данные в XML для этого базового ID
+        if base_id in xml_data:
+            xml_record = xml_data[base_id]
+            row_updated = False
+            
+            # Обновляем Price если есть новое значение
+            if 'Price' in existing_data.columns and xml_record['Price']:
+                if pd.isna(row['Price']) or str(row['Price']) != xml_record['Price']:
+                    existing_data.at[index, 'Price'] = xml_record['Price']
+                    changes_made = True
+                    row_updated = True
+                    print(f"Обновлена цена для товара {row_id}: {xml_record['Price']}")
+            
+            # Обновляем Brand если есть новое значение
+            if 'Brand' in existing_data.columns and xml_record['Brand']:
+                if pd.isna(row['Brand']) or str(row['Brand']) != xml_record['Brand']:
+                    existing_data.at[index, 'Brand'] = xml_record['Brand']
+                    changes_made = True
+                    row_updated = True
+                    print(f"Обновлен бренд для товара {row_id}: {xml_record['Brand']}")
+            
+            # Увеличиваем счетчик, если запись была обновлена
+            if row_updated:
+                updated_count += 1
+    
+    if changes_made:
+        print(f"Обновлено {updated_count} записей с новыми данными Price и/или Brand")
+    else:
+        print("Все поля Price и Brand актуальны, обновлений не требуется")
+    
+    return existing_data, changes_made
 
 if __name__ == "__main__":
     main()
