@@ -981,6 +981,37 @@ def clean_uniqualized_images_folder():
     else:
         print(f"Папка {unique_images_dir} не существует, очистка не требуется")
 
+def clean_processed_images_folder():
+    """Очищает папку processed_images после загрузки всех изображений на Google Drive"""
+    processed_images_dir = "processed_images"
+    
+    if os.path.exists(processed_images_dir):
+        try:
+            # Получаем список всех файлов в папке
+            files = os.listdir(processed_images_dir)
+            deleted_count = 0
+            
+            for file in files:
+                file_path = os.path.join(processed_images_dir, file)
+                try:
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Ошибка при удалении файла {file_path}: {e}")
+            
+            # Пытаемся удалить саму папку, если она пустая
+            try:
+                os.rmdir(processed_images_dir)
+                print(f"Папка {processed_images_dir} успешно очищена и удалена. Удалено файлов: {deleted_count}")
+            except OSError:
+                print(f"Папка {processed_images_dir} очищена (удалено файлов: {deleted_count}), но не удалена (возможно, не пустая)")
+                
+        except Exception as e:
+            print(f"Ошибка при очистке папки {processed_images_dir}: {e}")
+    else:
+        print(f"Папка {processed_images_dir} не существует, очистка не требуется")
+
 def duplicate_rows(data_frame):
     """
     Создает 7 дублей для каждой строки с изменением ID и адреса
@@ -1763,6 +1794,9 @@ def process_xml(use_gdrive_for_images=True):
         file_url = upload_to_google_drive(excel_path, force_update=False)
         print(f"Таблица не изменилась, используем существующую ссылку")
     
+    # Очищаем папку с обработанными изображениями после завершения всех операций
+    clean_processed_images_folder()
+    
     return final_df, file_url
 
 # Создаем алиас для запуска с Google Drive для изображений
@@ -1785,6 +1819,8 @@ def job():
     if download_xml():
         df, file_url = process_xml_with_gdrive()
         print(f"Ссылка на обработанный документ: {file_url}")
+        # Дополнительная очистка папки processed_images на случай, если что-то осталось
+        clean_processed_images_folder()
     print(f"Обработка завершена: {datetime.now()}")
 
 def check_folder_access(drive_service, folder_id):
