@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from main import process_xml, upload_to_google_drive
+from main_fixed import process_xml, upload_to_google_drive
 
 # Путь к локальному XML-файлу
 LOCAL_XML_PATH = "avito-ipkuznetsov.xml"
