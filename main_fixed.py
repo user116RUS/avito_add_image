@@ -96,6 +96,27 @@ def set_attributes_for_account(xml_url, local_xml, output_excel, google_cred, im
     WATERMARK_PATH = watermark_path
     MAX_ITEMS = max_items
     IS_CITY = is_city
+
+    if GOOGLE_DRIVE_FOLDER_ID:
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                GOOGLE_CRED_PATH, 
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            drive_service = build('drive', 'v3', credentials=credentials)
+            
+            # Проверяем доступ к папке
+            if not check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                print(f"ВНИМАНИЕ: Не удалось получить доступ к папке с ID {GOOGLE_DRIVE_FOLDER_ID}")
+                print("Будет использоваться автоматическое создание папки или корневая папка")
+        except Exception as e:
+            print(f"Ошибка при проверке доступа к папке Google Drive: {e}")
+    
+    # Проверяем консистентность товаров в Excel перед началом работы
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        print("Проверка консистентности товаров в Excel перед началом работы...")
+        check_excel_consistency()
+
     job()
 
 

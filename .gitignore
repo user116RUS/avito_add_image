@@ -34,4 +34,7 @@ Thumbs.db
 # Логи
 *.log
 
+# Файлы данных
+accounts
 unprocessed_images/
+accounts/account_first_user/shop_images_cache.json
