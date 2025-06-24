@@ -22,13 +22,14 @@ import random
 import numpy as np
 from PIL.ExifTags import TAGS, GPSTAGS
 import piexif
+import shutil
 
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_7.xlsx"
+OUTPUT_EXCEL_PATH = "few_cities_7_n.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 999999999 # Ограничиваем для демонстрации
+MAX_ITEMS = 99999999 # Убираем ограничение для продакшена
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
 GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -871,13 +872,22 @@ def upload_to_google_drive(file_path, force_update=True):
         return None
 
 def sync_excel_from_gdrive():
-    """Скачивание актуальной версии Excel-файла с Google Drive перед обработкой"""
+    """Скачивание актуальной версии Excel-файла с Google Drive и объединение с локальными изменениями"""
     try:
         # Проверка наличия учетных данных
         if not os.path.exists(GOOGLE_CRED_PATH):
-            print("Файл с учетными данными Google API не найден")
+            print("❌ Файл с учетными данными Google API не найден")
             return False
             
+        # Сохраняем локальные данные перед скачиванием, если файл существует
+        local_data = None
+        if os.path.exists(OUTPUT_EXCEL_PATH):
+            try:
+                local_data = pd.read_excel(OUTPUT_EXCEL_PATH)
+                print(f"💾 Сохранены локальные данные: {len(local_data)} строк")
+            except Exception as e:
+                print(f"⚠️ Ошибка при чтении локального файла: {e}")
+        
         credentials = service_account.Credentials.from_service_account_file(
             GOOGLE_CRED_PATH, 
             scopes=['https://www.googleapis.com/auth/drive']
@@ -896,7 +906,7 @@ def sync_excel_from_gdrive():
             # Проверяем доступ к папке
             if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
                 query += f" and '{GOOGLE_DRIVE_FOLDER_ID}' in parents"
-                print(f"Поиск Excel-файла в папке с ID: {GOOGLE_DRIVE_FOLDER_ID}")
+                print(f"🔍 Поиск Excel-файла в папке с ID: {GOOGLE_DRIVE_FOLDER_ID}")
         
         # Поиск файла на Google Drive
         response = drive_service.files().list(
@@ -906,8 +916,10 @@ def sync_excel_from_gdrive():
         ).execute()
         
         if not response.get('files'):
-            print(f"Файл {file_name} не найден на Google Drive")
-            return False
+            print(f"📁 Файл {file_name} не найден на Google Drive")
+            # Если файла нет на Google Drive, используем локальные данные
+            return local_data is not None
+            
             
         file_id = response.get('files')[0].get('id')
         
@@ -917,35 +929,61 @@ def sync_excel_from_gdrive():
             for parent_id in parents:
                 try:
                     parent = drive_service.files().get(fileId=parent_id, fields='id, name').execute()
-                    print(f"Файл находится в папке: {parent.get('name')} (ID: {parent_id})")
+                    print(f"📂 Файл находится в папке: {parent.get('name')} (ID: {parent_id})")
                 except Exception as e:
-                    print(f"Не удалось получить информацию о родительской папке: {e}")
+                    print(f"⚠️ Не удалось получить информацию о родительской папке: {e}")
         
-        # Скачивание файла
+        # Создаем резервную копию локального файла перед скачиванием
+        if os.path.exists(OUTPUT_EXCEL_PATH):
+            backup_path = f"{OUTPUT_EXCEL_PATH}.local_backup"
+            try:
+                shutil.copy2(OUTPUT_EXCEL_PATH, backup_path)
+                print(f"💾 Создана резервная копия локального файла: {backup_path}")
+            except Exception as e:
+                print(f"⚠️ Не удалось создать резервную копию локального файла: {e}")
+        
+        # Скачивание файла с Google Drive во временный файл
+        temp_gdrive_path = f"{OUTPUT_EXCEL_PATH}.gdrive_temp"
         request = drive_service.files().get_media(fileId=file_id)
         
-        # Сохраняем текущий файл как резервную копию, если он существует
-        if os.path.exists(OUTPUT_EXCEL_PATH):
-            backup_path = f"{OUTPUT_EXCEL_PATH}.bak"
-            try:
-                os.rename(OUTPUT_EXCEL_PATH, backup_path)
-                print(f"Создана резервная копия: {backup_path}")
-            except Exception as e:
-                print(f"Не удалось создать резервную копию: {e}")
-        
-        # Сохраняем файл с Google Drive
-        with open(OUTPUT_EXCEL_PATH, 'wb') as f:
+        print("⬇️ Скачивание файла с Google Drive...")
+        with open(temp_gdrive_path, 'wb') as f:
             downloader = MediaIoBaseDownload(f, request)
             done = False
             while not done:
                 status, done = downloader.next_chunk()
-                print(f"Скачивание {int(status.progress() * 100)}%")
+                print(f"📊 Скачивание {int(status.progress() * 100)}%")
                 
-        print(f"Файл {file_name} успешно скачан с Google Drive")
+        print(f"✅ Файл {file_name} успешно скачан с Google Drive")
+        
+        # Загружаем данные из скачанного файла
+        gdrive_data = None
+        try:
+            gdrive_data = pd.read_excel(temp_gdrive_path)
+            print(f"📊 Загружены данные из Google Drive: {len(gdrive_data)} строк")
+        except Exception as e:
+            print(f"❌ Ошибка при чтении файла с Google Drive: {e}")
+            # Удаляем временный файл
+            if os.path.exists(temp_gdrive_path):
+                os.remove(temp_gdrive_path)
+            return False
+        
+        # Объединяем локальные данные с данными из Google Drive
+        merged_data = merge_with_gdrive_changes(local_data, gdrive_data)
+        
+        # Сохраняем объединенные данные в основной файл
+        if merged_data is not None:
+            merged_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
+            print(f"💾 Сохранены объединенные данные в {OUTPUT_EXCEL_PATH}: {len(merged_data)} строк")
+        
+        # Удаляем временный файл
+        if os.path.exists(temp_gdrive_path):
+            os.remove(temp_gdrive_path)
+            
         return True
         
     except Exception as e:
-        print(f"Ошибка при синхронизации с Google Drive: {e}")
+        print(f"❌ Ошибка при синхронизации с Google Drive: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -1057,7 +1095,16 @@ def duplicate_rows(data_frame):
     # Для каждой строки в исходном DataFrame
     for _, row in data_frame.iterrows():
         # Добавляем исходную строку (оригинал без изменений)
-        all_rows.append(row.to_dict())
+        original_row = row.to_dict()
+        
+        # Устанавливаем значение Delivery для оригинальной строки
+        # Если это товар в Туле по адресу "Тула, улица Волнянского, 1", то ПВЗ, иначе пустое значение
+        if original_row.get('Address') == 'Тула, улица Волнянского, 1':
+            original_row['Delivery'] = 'ПВЗ'
+        else:
+            original_row['Delivery'] = ''
+        
+        all_rows.append(original_row)
         
         # Получаем исходный ID
         original_id = row['Id']
@@ -1079,6 +1126,9 @@ def duplicate_rows(data_frame):
             city_index = (i - 1) % len(CITY_LIST)  # Используем остаток от деления, чтобы не выйти за границы списка
             city = CITY_LIST[city_index]
             duplicate['Address'] = city
+            
+            # Устанавливаем значение Delivery для копий - всегда "Выключена"
+            duplicate['Delivery'] = 'Выключена'
             
             # Модифицируем описание, заменяя блок с доставкой
             if 'Description' in duplicate and duplicate['Description']:
@@ -1253,8 +1303,16 @@ def save_shop_images_cache(shop_image_urls):
     return False
 
 def process_xml(use_gdrive_for_images=True):
-    """Обработка XML-файла и создание Excel-таблицы"""
-    # Синхронизация с Google Drive
+    """
+    Обработка XML-файла и создание Excel-таблицы с сохранением пользовательских изменений из Google Drive.
+    
+    Логика работы:
+    1. Синхронизация с Google Drive с сохранением всех пользовательских изменений
+    2. Обновление только полей Price, Brand, ImageUrls из XML
+    3. Добавление новых позиций из XML
+    4. Удаление позиций, отсутствующих в XML
+    """
+    # Синхронизация с Google Drive (теперь с сохранением пользовательских изменений)
     sync_excel_from_gdrive()
     
     # Создание директории для изображений
@@ -1485,7 +1543,8 @@ def process_xml(use_gdrive_for_images=True):
         "Id", "AdType", "Category", "Address", "ContactPhone", 
         "GoodsType", "ProductType", "SparePartType", "Title", 
         "Description", "Price", "Availability", "Condition", "Brand", "OEM",
-        "TechnicSparePartType", "TransmissionSparePartType", "EngineSparePartType"
+        "TechnicSparePartType", "TransmissionSparePartType", "EngineSparePartType",
+        "Delivery"
     ]
     
     # Добавляем стандартные параметры, которых может не быть в XML
@@ -1566,7 +1625,7 @@ def process_xml(use_gdrive_for_images=True):
             continue
         
         # Обрабатываем только товары начинающиеся с "bz" и с ограничением на количество
-        if not ad_id.startswith("bz") or processed_count >= MAX_ITEMS:
+        if not ad_id.startswith("bz") or (MAX_ITEMS is not None and processed_count >= MAX_ITEMS):
             continue
         
         # Проверка существующих записей
@@ -1586,7 +1645,8 @@ def process_xml(use_gdrive_for_images=True):
             continue
         
         processed_count += 1
-        print(f"Обработка объявления {ad_id} ({processed_count}/{MAX_ITEMS - skipped_count})")
+        max_items_display = "∞" if MAX_ITEMS is None else str(MAX_ITEMS - skipped_count)
+        print(f"Обработка объявления {ad_id} ({processed_count}/{max_items_display})")
         
         # Замена описания
         description = ad.find("Description")
@@ -1694,6 +1754,13 @@ def process_xml(use_gdrive_for_images=True):
         row_data["InternetCalls"] = "Да"
         row_data["CallsDevices"] = "3889715587"
         row_data["ImageUrls"] = image_urls_string
+        
+        # Устанавливаем значение Delivery по умолчанию для оригинальных товаров
+        # Логика: если Address - "Тула, улица Волнянского, 1", то "ПВЗ", иначе пустое значение
+        if row_data.get("Address") == "Тула, улица Волнянского, 1":
+            row_data["Delivery"] = "ПВЗ"
+        else:
+            row_data["Delivery"] = ""
         
         data.append(row_data)
     
@@ -1806,22 +1873,41 @@ def process_xml_with_gdrive():
 
 def job():
     """Основная функция для запуска процесса обработки"""
-    print(f"Начало обработки: {datetime.now()}")
+    print(f"🚀 Начало обработки: {datetime.now()}")
     
     # Сначала скачиваем актуальную версию Excel
-    sync_excel_from_gdrive()
+    print("📥 Синхронизация с Google Drive...")
+    sync_success = sync_excel_from_gdrive()
+    if sync_success:
+        print("✅ Синхронизация с Google Drive завершена успешно")
+    else:
+        print("⚠️ Синхронизация с Google Drive завершена с предупреждениями")
     
     # Проверяем консистентность товаров в Excel
     if os.path.exists(OUTPUT_EXCEL_PATH):
-        print("Проверка консистентности товаров в Excel...")
-        check_excel_consistency()
+        print("🔍 Проверка консистентности товаров в Excel...")
+        consistency_changes = check_excel_consistency()
+        if consistency_changes:
+            print("✅ Консистентность восстановлена, изменения сохранены")
+        else:
+            print("✅ Данные консистентны, изменений не требуется")
     
+    print("📄 Загрузка и обработка XML...")
     if download_xml():
+        print("✅ XML-файл успешно загружен")
         df, file_url = process_xml_with_gdrive()
-        print(f"Ссылка на обработанный документ: {file_url}")
+        print(f"✅ Обработка XML завершена")
+        print(f"🔗 Ссылка на обработанный документ: {file_url}")
+        
         # Дополнительная очистка папки processed_images на случай, если что-то осталось
+        print("🧹 Очистка временных файлов...")
         clean_processed_images_folder()
-    print(f"Обработка завершена: {datetime.now()}")
+        print("✅ Очистка завершена")
+    else:
+        print("❌ Ошибка при загрузке XML-файла")
+        
+    print(f"🏁 Обработка завершена: {datetime.now()}")
+    print("=" * 50)
 
 def check_folder_access(drive_service, folder_id):
     """
@@ -2333,6 +2419,85 @@ def update_existing_records(existing_data, xml_root):
         print("Все поля Price и Brand актуальны, обновлений не требуется")
     
     return existing_data, changes_made
+
+def merge_with_gdrive_changes(local_data, gdrive_data):
+    """
+    Объединяет локальные данные с изменениями из Google Drive таблицы.
+    Сохраняет все ручные изменения пользователя, обновляя только определенные поля из XML.
+    
+    local_data: DataFrame с локальными данными (может быть None)
+    gdrive_data: DataFrame с данными из Google Drive
+    
+    Возвращает: объединенный DataFrame с сохраненными пользовательскими изменениями
+    """
+    if gdrive_data is None or gdrive_data.empty:
+        print("📄 Данные из Google Drive пусты, используются локальные данные")
+        return local_data
+    
+    if local_data is None or local_data.empty:
+        print("📄 Локальные данные отсутствуют, используются данные из Google Drive")
+        return gdrive_data
+    
+    print("🔄 Объединение локальных данных с изменениями из Google Drive...")
+    
+    # Поля, которые могут обновляться из XML (остальные сохраняются из Google Drive)
+    xml_updatable_fields = {'Price', 'Brand', 'ImageUrls'}
+    
+    # Поля, которые всегда сохраняются из Google Drive (пользовательские изменения)
+    user_editable_fields = set(gdrive_data.columns) - xml_updatable_fields - {'Id'}
+    
+    print(f"📊 Поля, обновляемые из XML: {xml_updatable_fields}")
+    print(f"🔒 Поля, сохраняемые из Google Drive: {user_editable_fields}")
+    
+    # Создаем копию данных из Google Drive как основу
+    merged_data = gdrive_data.copy()
+    
+    # Создаем словарь локальных данных для быстрого поиска по ID
+    local_dict = {}
+    if 'Id' in local_data.columns:
+        for index, row in local_data.iterrows():
+            local_dict[str(row['Id'])] = row
+    
+    # Обновляем записи в merged_data локальными данными только для специфичных полей
+    updated_count = 0
+    for index, row in merged_data.iterrows():
+        row_id = str(row['Id'])
+        
+        if row_id in local_dict:
+            local_row = local_dict[row_id]
+            row_updated = False
+            
+            # Обновляем только XML-специфичные поля из локальных данных
+            for field in xml_updatable_fields:
+                if field in merged_data.columns and field in local_data.columns:
+                    local_value = local_row[field]
+                    if pd.notna(local_value) and str(local_value).strip() != '':
+                        # Проверяем, отличается ли значение
+                        current_value = row[field]
+                        if pd.isna(current_value) or str(current_value) != str(local_value):
+                            merged_data.at[index, field] = local_value
+                            row_updated = True
+                            print(f"  ↻ Обновлено поле {field} для товара {row_id}")
+            
+            if row_updated:
+                updated_count += 1
+    
+    # Добавляем новые записи из локальных данных, которых нет в Google Drive
+    gdrive_ids = set(str(id_val) for id_val in gdrive_data['Id'].astype(str).tolist()) if 'Id' in gdrive_data.columns else set()
+    local_ids = set(str(id_val) for id_val in local_data['Id'].astype(str).tolist()) if 'Id' in local_data.columns else set()
+    
+    new_ids = local_ids - gdrive_ids
+    if new_ids:
+        print(f"➕ Найдено {len(new_ids)} новых записей в локальных данных")
+        for new_id in new_ids:
+            if new_id in local_dict:
+                new_row = local_dict[new_id].to_dict()
+                merged_data = pd.concat([merged_data, pd.DataFrame([new_row])], ignore_index=True)
+                print(f"  ➕ Добавлена новая запись: {new_id}")
+    
+    print(f"✅ Объединение завершено: обновлено {updated_count} записей, добавлено {len(new_ids) if new_ids else 0} новых записей")
+    
+    return merged_data
 
 if __name__ == "__main__":
     main()
