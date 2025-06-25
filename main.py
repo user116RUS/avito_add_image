@@ -27,7 +27,7 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_7_n.xlsx"
+OUTPUT_EXCEL_PATH = "few_cities_7_new_1.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
 MAX_ITEMS = 99999999 # Убираем ограничение для продакшена
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
@@ -38,11 +38,7 @@ SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэшир�
 CITY_LIST = [
     "Керчь",
     "Нижний Тагил", 
-    "Коломна",
-    "Михайлов",
-    "Елец",
-    "Новомосковск",
-    "Липецк",
+    "Екатеринбург",
     "Пятигорск",
     "Киров",
     "Орск",
