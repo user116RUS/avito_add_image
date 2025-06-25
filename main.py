@@ -1056,7 +1056,7 @@ def clean_processed_images_folder():
 
 def duplicate_rows(data_frame):
     """
-    Создает 7 дублей для каждой строки с изменением ID и адреса
+    Создает дубли для каждой строки с изменением ID и адреса для каждого города из списка CITY_LIST
     
     data_frame: DataFrame с исходными данными
     
@@ -1131,17 +1131,15 @@ def duplicate_rows(data_frame):
         if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
             original_image_urls = row['ImageUrls'].split('|')
         
-        # Создаем 7 дублей с изменениями
-        for i in range(1, 8):
+        # Создаем дубли для каждого города из списка CITY_LIST
+        for city in CITY_LIST:
             # Создаем копию строки
             duplicate = row.to_dict()
             
             # Изменяем ID (добавляем -1, -2, и т.д.)
-            duplicate['Id'] = f"{original_id}-{i}"
+            duplicate['Id'] = f"{original_id}-{city}"
             
             # Изменяем адрес на город из списка
-            city_index = (i - 1) % len(CITY_LIST)  # Используем остаток от деления, чтобы не выйти за границы списка
-            city = CITY_LIST[city_index]
             duplicate['Address'] = city
             
             # Устанавливаем значение Delivery для копий - всегда "Выключена"
