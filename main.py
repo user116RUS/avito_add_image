@@ -1142,6 +1142,9 @@ def duplicate_rows(data_frame):
             # Изменяем адрес на город из списка
             duplicate['Address'] = city
             
+            # Получаем индекс города для уникализации изображений
+            city_index = CITY_LIST.index(city)
+            
             # Устанавливаем значение Delivery для копий - всегда "Выключена"
             duplicate['Delivery'] = 'Выключена'
             
