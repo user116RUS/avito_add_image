@@ -38,7 +38,11 @@ SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэшир�
 CITY_LIST = [
     "Керчь",
     "Нижний Тагил", 
-    "Екатеринбург",
+    "Коломна",
+    "Михайлов",
+    "Елец",
+    "Новомосковск",
+    "Липецк",
     "Пятигорск",
     "Киров",
     "Орск",
@@ -1063,6 +1067,9 @@ def duplicate_rows(data_frame):
         
     print(f"Создание дублей для {len(data_frame)} строк")
     
+    # Ключевые слова, при наличии которых товар не размножается на другие города
+    exclude_keywords = ['резонатор', 'глушитель', 'приемные трубы']
+    
     # Список для хранения всех строк (исходных и дублей)
     all_rows = []
     
@@ -1105,6 +1112,16 @@ def duplicate_rows(data_frame):
             original_row['Delivery'] = ''
         
         all_rows.append(original_row)
+        
+        # Проверяем название товара на наличие ключевых слов
+        title = row.get('Title', '')
+        if title and pd.notna(title):
+            title_lower = title.lower()
+            should_skip_duplication = any(keyword in title_lower for keyword in exclude_keywords)
+            
+            if should_skip_duplication:
+                print(f"Товар '{title}' (ID: {row['Id']}) содержит ключевое слово - пропускаем размножение на города")
+                continue
         
         # Получаем исходный ID
         original_id = row['Id']
