@@ -29,7 +29,7 @@ XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = "few_cities_new.xlsx"
 GOOGLE_CRED_PATH = "google_cred.json"
-MAX_ITEMS = 99999999 # Убираем ограничение для продакшена
+MAX_ITEMS = None # Убираем ограничение для продакшена
 IMAGES_FOLDER_NAME = "cities_7"  # Название папки для изображений на Google Drive
 GOOGLE_DRIVE_FOLDER_ID = '1oKQSNeMFPM2a0RpbOggjzmUktgfOQZ97'  # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -1132,18 +1132,18 @@ def duplicate_rows(data_frame):
             original_image_urls = row['ImageUrls'].split('|')
         
         # Создаем дубли для каждого города из списка CITY_LIST
-        for city in CITY_LIST:
+        for city_index, city in enumerate(CITY_LIST):
             # Создаем копию строки
             duplicate = row.to_dict()
             
             # Изменяем ID (добавляем -1, -2, и т.д.)
-            duplicate['Id'] = f"{original_id}-{city}"
+            duplicate['Id'] = f"{original_id}-{city_index + 1}"
             
             # Изменяем адрес на город из списка
             duplicate['Address'] = city
             
-            # Получаем индекс города для уникализации изображений
-            city_index = CITY_LIST.index(city)
+            # Получаем индекс города для уникализации изображений (теперь city_index уже доступен)
+            # city_index = CITY_LIST.index(city)  # Эта строка больше не нужна
             
             # Устанавливаем значение Delivery для копий - всегда "Выключена"
             duplicate['Delivery'] = 'Выключена'
