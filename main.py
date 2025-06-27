@@ -260,10 +260,19 @@ def upload_image_to_gdrive(drive_service, file_path, max_retries=3, retry_delay=
         try:
             file_name = os.path.basename(file_path)
             
-            # Проверим, существует ли папка для изображений
-            folder_id = GOOGLE_DRIVE_FOLDER_ID  # Используем ID папки, если он указан
+            # Определяем папку для загрузки
+            folder_id = None
             
-            if folder_id is None:
+            # Сначала пробуем использовать указанную папку, если она задана
+            if GOOGLE_DRIVE_FOLDER_ID:
+                if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
+                    folder_id = GOOGLE_DRIVE_FOLDER_ID
+                    print(f"Используется указанная папка с ID: {folder_id}")
+                else:
+                    print(f"ОШИБКА: Нет доступа к указанной папке {GOOGLE_DRIVE_FOLDER_ID}")
+                    return None
+            else:
+                # Если GOOGLE_DRIVE_FOLDER_ID не задан, ищем или создаем папку по имени
                 try:
                     print(f"Поиск папки {IMAGES_FOLDER_NAME} на Google Drive")
                     response = drive_service.files().list(
@@ -300,22 +309,16 @@ def upload_image_to_gdrive(drive_service, file_path, max_retries=3, retry_delay=
                         print(f"Найдена существующая папка с ID: {folder_id}")
                 except Exception as e:
                     print(f"Ошибка при работе с папкой на Google Drive: {e}")
-                    # Если не удалось получить/создать папку, загружаем файл в корень
-                    folder_id = None
-            else:
-                print(f"Используется указанная папка с ID: {folder_id}")
+                    print("ОШИБКА: Не удалось создать или найти папку для изображений")
+                    return None
             
-            # Загружаем файл в папку или корень
+            # Загружаем файл в папку
             file_metadata = {
-                'name': file_name
+                'name': file_name,
+                'parents': [folder_id]  # Всегда загружаем в указанную папку
             }
             
-            # Добавляем папку, если она создана/получена
-            if folder_id:
-                file_metadata['parents'] = [folder_id]
-                print(f"Файл будет загружен в папку {folder_id}")
-            else:
-                print("Файл будет загружен в корневую папку")
+            print(f"Файл будет загружен в папку {folder_id}")
             
             # Используем меньший таймаут для предотвращения зависаний
             print(f"Подготовка файла {file_path} для загрузки")
