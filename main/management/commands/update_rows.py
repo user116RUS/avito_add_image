@@ -25,7 +25,7 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_local.xlsx"
+OUTPUT_EXCEL_PATH = "few_cities_global.xlsx"
 YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
 MAX_ITEMS = 1 # Убираем ограничение для продакшена
 YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
