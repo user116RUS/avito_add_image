@@ -8,11 +8,8 @@ import pandas as pd
 from io import BytesIO
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
-import schedule
-from google.auth.transport.requests import Request
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+# Заменяем Google Drive импорты на Яндекс.Диск
+import yadisk
 import openpyxl
 from openpyxl.drawing.image import Image
 from pathlib import Path
@@ -28,19 +25,61 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_new_prod.xlsx"
-GOOGLE_CRED_PATH = "google_cred.json"  # Изменено на Service Account credentials
-MAX_ITEMS = 9999999999 # Убираем ограничение для продакшена
-IMAGES_FOLDER_NAME = "pre-test"  # Название папки для изображений на Google Drive
-GOOGLE_DRIVE_FOLDER_ID = None # ID папки на Google Drive (если None, используется IMAGES_FOLDER_NAME)
+OUTPUT_EXCEL_PATH = "few_cities_local.xlsx"
+YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
+MAX_ITEMS = 1 # Убираем ограничение для продакшена
+YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
-# Конфигурация Яндекс.Диска
-YANDEX_OAUTH_TOKEN = 'y0__xDxneihCBjblgMgnv7t2BM9ZgWpyn0Xak2PwO6kZyFKpQ3Ebw'
-YANDEX_IMAGES_FOLDER = "/test"  # Папка для изображений на Яндекс.Диске
+# Конфигурация для локального хранения изображений
+LOCAL_IMAGES_DIR = "media/processed_images"  # Папка для обработанных изображений
+LOCAL_UNIQUE_IMAGES_DIR = "media/uniqualized_images"  # Папка для уникализированных изображений
+SERVER_BASE_URL = "https://custflow-admin.store"  # Базовый URL сервера (изменить на продакшн URL)
 
 # Область доступа для Google Drive API
-SCOPES = ['https://www.googleapis.com/auth/drive']
+# SCOPES = ['https://www.googleapis.com/auth/drive']
+
+def check_django_server():
+    """Проверяет, запущен ли Django сервер"""
+    try:
+        response = requests.get(f"{SERVER_BASE_URL}/admin/", timeout=5)
+        return True
+    except requests.exceptions.RequestException:
+        return False
+
+def ensure_django_server_running():
+    """Запускает Django сервер если он не запущен"""
+    if not check_django_server():
+        print("🚀 Django сервер не запущен, запускаем...")
+        
+        def run_server():
+            import subprocess
+            import sys
+            
+            try:
+                # Запускаем сервер в фоновом режиме
+                subprocess.Popen([
+                    sys.executable, "manage.py", "runserver", "localhost:8000"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # Ждем запуска сервера
+                for _ in range(30):
+                    time.sleep(1)
+                    if check_django_server():
+                        print("✅ Django сервер успешно запущен")
+                        return True
+                        
+                print("⚠️ Django сервер не запустился в течение 30 секунд")
+                return False
+                
+            except Exception as e:
+                print(f"❌ Ошибка при запуске Django сервера: {e}")
+                return False
+        
+        return run_server()
+    else:
+        print("✅ Django сервер уже запущен")
+        return True
 
 # Список городов для дублирования
 CITY_LIST = [
@@ -56,6 +95,7 @@ CITY_LIST = [
     "Орск",
     "Пенза"
 ]
+
 
 # Новый текст описания
 NEW_DESCRIPTION = """</p><p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>
@@ -125,10 +165,40 @@ def download_xml(max_retries=5, retry_delay=10):
 
 def create_output_dir():
     """Создание директории для обработанных изображений"""
-    output_dir = "processed_images"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    return output_dir
+    # Создаем директорию для обработанных изображений в media
+    if not os.path.exists(LOCAL_IMAGES_DIR):
+        os.makedirs(LOCAL_IMAGES_DIR)
+    
+    # Создаем директорию для уникализированных изображений в media
+    if not os.path.exists(LOCAL_UNIQUE_IMAGES_DIR):
+        os.makedirs(LOCAL_UNIQUE_IMAGES_DIR)
+    
+    return LOCAL_IMAGES_DIR
+
+def generate_local_image_url(file_path):
+    """
+    Генерирует URL для локального изображения на сервере
+    
+    Args:
+        file_path (str): Локальный путь к файлу
+    
+    Returns:
+        str: URL для доступа к изображению через веб-сервер
+    """
+    # Получаем относительный путь от корня проекта
+    if file_path.startswith(LOCAL_IMAGES_DIR):
+        # Для обработанных изображений
+        relative_path = file_path.replace(LOCAL_IMAGES_DIR, "/media/processed_images", 1)
+    elif file_path.startswith(LOCAL_UNIQUE_IMAGES_DIR):
+        # Для уникализированных изображений
+        relative_path = file_path.replace(LOCAL_UNIQUE_IMAGES_DIR, "/media/uniqualized_images", 1)
+    else:
+        # Для других файлов в media
+        relative_path = file_path.replace("media/", "/media/", 1)
+    
+    # Формируем полный URL
+    full_url = SERVER_BASE_URL + relative_path
+    return full_url
 
 def overlay_image(base_image_url, overlay_path, output_path):
     """Наложение одного изображения на другое с сохранением соотношения сторон"""
@@ -312,17 +382,10 @@ def process_image_urls(original_urls, output_dir, ad_id, shop_image_path=None):
                 result_path = None
         
         if result_path:
-            # Загрузка на Яндекс.Диск
-            try:
-                file_url = upload_image_to_yandex_disk(result_path)
-                if file_url:
-                    processed_urls.append(file_url)
-                else:
-                    # В случае ошибки загружаем локальный путь как запасной вариант
-                    processed_urls.append(output_path)
-            except Exception as e:
-                # В случае исключения загружаем локальный путь
-                processed_urls.append(output_path)
+            # Генерируем локальный URL для изображения
+            local_url = generate_local_image_url(result_path)
+            processed_urls.append(local_url)
+            print(f"Обработано изображение: {output_filename} -> {local_url}")
     
     # Изображения магазина теперь добавляются в основной функции process_xml,
     # поэтому здесь мы их не добавляем
@@ -560,142 +623,85 @@ def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
         print(f"Создан новый Excel-файл: {output_path}")
         return output_path, True  # Файл был создан
 
-def upload_to_google_drive(file_path, force_update=True):
-    """
-    Загрузка файла на Google Drive и возврат ссылки на документ
-    
-    file_path: путь к файлу для загрузки
-    force_update: если True, то существующий файл будет обновлен;
-                  если False, то существующий файл не будет обновлен
-    """
+def upload_to_yandex_disk(file_path, force_update=True):
+    """Загружает Excel файл на Яндекс.Диск"""
     try:
-        # Аутентификация с помощью Service Account
-        drive_service = create_drive_service()
-        if not drive_service:
-            print("❌ Не удалось инициализировать Google Drive сервис")
+        # Проверяем, что загружаем только Excel файлы
+        if not file_path.endswith(('.xlsx', '.xls')):
+            print(f"⚠️ Файл {file_path} не является Excel файлом, пропускаем загрузку")
+            return None
+            
+        # Проверяем наличие токена
+        if not YANDEX_DISK_TOKEN:
+            print("❌ Токен Яндекс.Диска не найден в переменной окружения YANDEX_DISK_TOKEN")
+            return None
+            
+        # Создаем клиент Яндекс.Диска
+        try:
+            disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
+            
+            # Проверяем валидность токена
+            if not disk.check_token():
+                print("❌ Токен Яндекс.Диска недействителен")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Ошибка при создании клиента Яндекс.Диска: {e}")
             return None
         
-        # Название файла в Google Drive
+        # Название файла на Яндекс.Диске
         file_name = os.path.basename(file_path)
+        remote_path = f"{YANDEX_DISK_FOLDER_PATH.rstrip('/')}/{file_name}"
         
-        # Определяем папку для сохранения
-        folder_id = None
-        if GOOGLE_DRIVE_FOLDER_ID:
-            # Проверяем доступ к указанной папке
-            if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
-                folder_id = GOOGLE_DRIVE_FOLDER_ID
-                print(f"📁 Excel-файл будет сохранен в папке с ID: {folder_id}")
-            else:
-                print(f"⚠️ Папка с ID {GOOGLE_DRIVE_FOLDER_ID} недоступна, будет создана новая папка")
-        
-        # Если папка не указана или недоступна, создаем новую
-        if not folder_id:
-            folder_id = create_or_find_folder(drive_service, IMAGES_FOLDER_NAME)
-            if folder_id:
-                print(f"📁 Используется папка '{IMAGES_FOLDER_NAME}' с ID: {folder_id}")
-        
-        # Создаем запрос для поиска файла
-        query = f"name='{file_name}' and trashed=false"
-        
-        # Если у нас есть folder_id, ищем файл только в этой папке
-        if folder_id:
-            query += f" and '{folder_id}' in parents"
-            
-        # Проверка, существует ли файл с таким именем
-        response = drive_service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name)'
-        ).execute()
-        
-        file_id = None
-        
-        if not response.get('files'):
-            # Создание нового файла
-            file_metadata = {
-                'name': file_name,
-                'mimeType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            }
-            
-            # Если у нас есть folder_id, добавляем его в метаданные
-            if folder_id:
-                file_metadata['parents'] = [folder_id]
-                
-            media = MediaFileUpload(file_path, resumable=True)
-            
-            try:
-                file = drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id'
-                ).execute()
-                file_id = file.get("id")
-                print(f'✅ Файл загружен на Google Drive, ID: {file_id}')
-            except Exception as upload_error:
-                if "storageQuotaExceeded" in str(upload_error):
-                    print("❌ ОШИБКА: У сервисного аккаунта нет квоты хранения!")
-                    print("📋 РЕШЕНИЯ:")
-                    print("   1. Создайте Shared Drive (общий диск) в Google Drive")
-                    print("   2. Или дайте доступ сервисному аккаунту к существующей папке")
-                    print("   3. Или используйте OAuth вместо Service Account")
-                    print(f"📧 Email сервисного аккаунта: {get_service_account_email()}")
-                    return None
-                else:
-                    raise upload_error
-        else:
-            # Файл уже существует
-            file_id = response.get('files')[0].get('id')
-            
-            if force_update:
-                # Обновляем существующий файл только если требуется обновление
-                media = MediaFileUpload(file_path, resumable=True)
-                try:
-                    file = drive_service.files().update(
-                        fileId=file_id,
-                        media_body=media,
-                        fields='id'
-                    ).execute()
-                    print(f'✅ Файл обновлен на Google Drive, ID: {file_id}')
-                except Exception as update_error:
-                    if "storageQuotaExceeded" in str(update_error):
-                        print("❌ ОШИБКА: У сервисного аккаунта нет квоты хранения для обновления!")
-                        print("📧 Email сервисного аккаунта: {get_service_account_email()}")
-                        return None
-                    else:
-                        raise update_error
-            else:
-                print(f'📄 Используется существующий файл на Google Drive, ID: {file_id}')
-        
-        # Установка доступа на редактирование для всех, у кого есть ссылка
+        # Проверяем, существует ли файл на Яндекс.Диске
+        file_exists = False
         try:
-            drive_service.permissions().create(
-                fileId=file_id,
-                body={
-                    'type': 'anyone',
-                    'role': 'writer',
-                }
-            ).execute()
-            print(f'🔓 Установлены права на редактирование для всех, у кого есть ссылка')
-        except Exception as perm_error:
-            print(f'⚠️ Не удалось установить публичные права доступа: {perm_error}')
+            disk.get_meta(remote_path)
+            file_exists = True
+        except yadisk.exceptions.NotFoundError:
+            file_exists = False
+        except Exception as e:
+            print(f"⚠️ Ошибка при проверке существования файла: {e}")
         
-        # Формирование ссылки на документ
-        file_url = f"https://docs.google.com/spreadsheets/d/{file_id}/edit?usp=sharing"
+        if file_exists and not force_update:
+            print(f"📄 Файл '{file_name}' уже существует на Яндекс.Диске")
+            return f"https://disk.yandex.ru/client/disk{remote_path}"
         
-        return file_url
+        # Загружаем файл на Яндекс.Диск
+        try:
+            if file_exists:
+                print(f"🔄 Обновляем файл '{file_name}' на Яндекс.Диске...")
+            else:
+                print(f"📤 Загружаем новый файл '{file_name}' на Яндекс.Диск...")
+            
+            disk.upload(file_path, remote_path, overwrite=True)
+            print(f"✅ Файл '{file_name}' успешно загружен на Яндекс.Диск")
+            
+            # Публикуем файл для получения ссылки
+            try:
+                disk.publish(remote_path)
+                meta = disk.get_meta(remote_path)
+                public_url = meta.public_url
+                print(f"🔗 Файл '{file_name}' доступен по ссылке")
+                return public_url
+            except Exception as e:
+                print(f"⚠️ Файл загружен, но не удалось сделать его публичным: {e}")
+                return f"https://disk.yandex.ru/client/disk{remote_path}"
+            
+        except Exception as e:
+            print(f"❌ Ошибка при загрузке файла на Яндекс.Диск: {e}")
+            return None
             
     except Exception as e:
-        print(f"❌ Ошибка при загрузке на Google Drive: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Ошибка при загрузке файла на Яндекс.Диск: {e}")
         return None
 
-def sync_excel_from_gdrive():
-    """Скачивание актуальной версии Excel-файла с Google Drive и объединение с локальными изменениями"""
+def sync_excel_from_yandex_disk():
+    """Скачивание актуальной версии Excel-файла с Яндекс.Диска и объединение с локальными изменениями"""
     try:
-        # Проверка наличия учетных данных
-        if not os.path.exists(GOOGLE_CRED_PATH):
-            print("❌ Файл с Service Account учетными данными Google API не найден")
+        # Проверяем наличие токена
+        if not YANDEX_DISK_TOKEN:
+            print("❌ Токен Яндекс.Диска не найден в переменной окружения YANDEX_DISK_TOKEN")
             return False
             
         # Сохраняем локальные данные перед скачиванием, если файл существует
@@ -707,48 +713,33 @@ def sync_excel_from_gdrive():
             except Exception as e:
                 print(f"⚠️ Ошибка при чтении локального файла: {e}")
         
-        drive_service = create_drive_service()
-        if not drive_service:
-            print("❌ Не удалось инициализировать Google Drive сервис")
+        # Создаем клиент Яндекс.Диска
+        try:
+            disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
+            
+            # Проверяем валидность токена
+            if not disk.check_token():
+                print("❌ Токен Яндекс.Диска недействителен")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Ошибка при создании клиента Яндекс.Диска: {e}")
             return False
         
-        # Название файла в Google Drive
+        # Название файла на Яндекс.Диске
         file_name = os.path.basename(OUTPUT_EXCEL_PATH)
+        remote_path = f"{YANDEX_DISK_FOLDER_PATH.rstrip('/')}/{file_name}"
         
-        # Создаем запрос для поиска файла
-        query = f"name='{file_name}' and trashed=false"
-        
-        # Если у нас есть GOOGLE_DRIVE_FOLDER_ID, ищем файл только в этой папке
-        if GOOGLE_DRIVE_FOLDER_ID:
-            # Проверяем доступ к папке
-            if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
-                query += f" and '{GOOGLE_DRIVE_FOLDER_ID}' in parents"
-                print(f"🔍 Поиск Excel-файла в папке с ID: {GOOGLE_DRIVE_FOLDER_ID}")
-        
-        # Поиск файла на Google Drive
-        response = drive_service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name, parents)'
-        ).execute()
-        
-        if not response.get('files'):
-            print(f"📁 Файл {file_name} не найден на Google Drive")
-            # Если файла нет на Google Drive, используем локальные данные
+        # Проверяем, существует ли файл на Яндекс.Диске
+        try:
+            disk.get_meta(remote_path)
+        except yadisk.exceptions.NotFoundError:
+            print(f"📁 Файл {file_name} не найден на Яндекс.Диске")
+            # Если файла нет на Яндекс.Диске, используем локальные данные
             return local_data is not None
-            
-            
-        file_id = response.get('files')[0].get('id')
-        
-        # Выводим информацию о родительской папке
-        parents = response.get('files')[0].get('parents', [])
-        if parents:
-            for parent_id in parents:
-                try:
-                    parent = drive_service.files().get(fileId=parent_id, fields='id, name').execute()
-                    print(f"📂 Файл находится в папке: {parent.get('name')} (ID: {parent_id})")
-                except Exception as e:
-                    print(f"⚠️ Не удалось получить информацию о родительской папке: {e}")
+        except Exception as e:
+            print(f"❌ Ошибка при проверке файла на Яндекс.Диске: {e}")
+            return False
         
         # Создаем резервную копию локального файла перед скачиванием
         if os.path.exists(OUTPUT_EXCEL_PATH):
@@ -759,34 +750,31 @@ def sync_excel_from_gdrive():
             except Exception as e:
                 print(f"⚠️ Не удалось создать резервную копию локального файла: {e}")
         
-        # Скачивание файла с Google Drive во временный файл
-        temp_gdrive_path = f"{OUTPUT_EXCEL_PATH}.gdrive_temp"
-        request = drive_service.files().get_media(fileId=file_id)
+        # Скачивание файла с Яндекс.Диска во временный файл
+        temp_yadisk_path = f"{OUTPUT_EXCEL_PATH}.yadisk_temp"
         
-        print("⬇️ Скачивание файла с Google Drive...")
-        with open(temp_gdrive_path, 'wb') as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-                print(f"📊 Скачивание {int(status.progress() * 100)}%")
-                
-        print(f"✅ Файл {file_name} успешно скачан с Google Drive")
-        
-        # Загружаем данные из скачанного файла
-        gdrive_data = None
         try:
-            gdrive_data = pd.read_excel(temp_gdrive_path)
-            print(f"📊 Загружены данные из Google Drive: {len(gdrive_data)} строк")
+            print("⬇️ Скачивание файла с Яндекс.Диска...")
+            disk.download(remote_path, temp_yadisk_path)
+            print(f"✅ Файл {file_name} успешно скачан с Яндекс.Диска")
         except Exception as e:
-            print(f"❌ Ошибка при чтении файла с Google Drive: {e}")
-            # Удаляем временный файл
-            if os.path.exists(temp_gdrive_path):
-                os.remove(temp_gdrive_path)
+            print(f"❌ Ошибка при скачивании файла с Яндекс.Диска: {e}")
             return False
         
-        # Объединяем локальные данные с данными из Google Drive
-        merged_data = merge_with_gdrive_changes(local_data, gdrive_data)
+        # Загружаем данные из скачанного файла
+        yadisk_data = None
+        try:
+            yadisk_data = pd.read_excel(temp_yadisk_path)
+            print(f"📊 Загружены данные из Яндекс.Диска: {len(yadisk_data)} строк")
+        except Exception as e:
+            print(f"❌ Ошибка при чтении файла с Яндекс.Диска: {e}")
+            # Удаляем временный файл
+            if os.path.exists(temp_yadisk_path):
+                os.remove(temp_yadisk_path)
+            return False
+        
+        # Объединяем локальные данные с данными из Яндекс.Диска
+        merged_data = merge_with_yadisk_changes(local_data, yadisk_data)
         
         # Сохраняем объединенные данные в основной файл
         if merged_data is not None:
@@ -794,20 +782,20 @@ def sync_excel_from_gdrive():
             print(f"💾 Сохранены объединенные данные в {OUTPUT_EXCEL_PATH}: {len(merged_data)} строк")
         
         # Удаляем временный файл
-        if os.path.exists(temp_gdrive_path):
-            os.remove(temp_gdrive_path)
+        if os.path.exists(temp_yadisk_path):
+            os.remove(temp_yadisk_path)
             
         return True
         
     except Exception as e:
-        print(f"❌ Ошибка при синхронизации с Google Drive: {e}")
+        print(f"❌ Ошибка при синхронизации с Яндекс.Диском: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 def clean_uniqualized_images_folder():
     """Очищает папку uniqualized_images после загрузки всех изображений"""
-    unique_images_dir = "uniqualized_images"
+    unique_images_dir = LOCAL_UNIQUE_IMAGES_DIR  # Используем константу из настроек
     
     if os.path.exists(unique_images_dir):
         try:
@@ -837,8 +825,8 @@ def clean_uniqualized_images_folder():
         print(f"Папка {unique_images_dir} не существует, очистка не требуется")
 
 def clean_processed_images_folder():
-    """Очищает папку processed_images после загрузки всех изображений на Google Drive"""
-    processed_images_dir = "processed_images"
+    """Очищает папку processed_images после загрузки всех изображений"""
+    processed_images_dir = LOCAL_IMAGES_DIR  # Используем константу из настроек
     
     if os.path.exists(processed_images_dir):
         try:
@@ -895,7 +883,7 @@ def duplicate_rows(data_frame):
         print("Уникализированные изображения будут сохранены локально.")
     
     # Создаем директорию для уникализированных изображений
-    unique_images_dir = "uniqualized_images"
+    unique_images_dir = LOCAL_UNIQUE_IMAGES_DIR
     os.makedirs(unique_images_dir, exist_ok=True)
     
     # Загружаем ссылки на изображения магазина из кэша
@@ -1078,8 +1066,9 @@ def duplicate_rows(data_frame):
     # Создаем новый DataFrame из всех строк
     result_df = pd.DataFrame(all_rows)
     
-    # Очищаем папку с уникализированными изображениями после завершения всех операций
-    clean_uniqualized_images_folder()
+    # НЕ очищаем папку с уникализированными изображениями здесь!
+    # Очистка будет происходить после сохранения данных в Excel
+    # clean_uniqualized_images_folder()
     
     print(f"Создано {len(result_df)} строк (исходные + дубли)")
     return result_df
@@ -1129,21 +1118,21 @@ def save_shop_images_cache(shop_image_urls):
 
 def process_xml(use_gdrive_for_images=True):
     """
-    Обработка XML-файла и создание Excel-таблицы с сохранением пользовательских изменений из Google Drive.
+    Обработка XML-файла и создание Excel-таблицы с сохранением пользовательских изменений из Яндекс.Диска.
     
     Логика работы:
-    1. Синхронизация с Google Drive с сохранением всех пользовательских изменений
+    1. Синхронизация с Яндекс.Диском с сохранением всех пользовательских изменений
     2. Обновление только полей Price, Brand, ImageUrls из XML
     3. Добавление новых позиций из XML
     4. Удаление позиций, отсутствующих в XML
     """
-    # Синхронизация с Google Drive (теперь с сохранением пользовательских изменений)
-    sync_excel_from_gdrive()
+    # Синхронизация с Яндекс.Диском (теперь с сохранением пользовательских изменений)
+    sync_excel_from_yandex_disk()
     
     # Создание директории для изображений
     output_dir = create_output_dir()
     
-    # Инициализация Google Drive API для изображений
+    # Инициализация Google Drive API для изображений (только для изображений, не для Excel)
     gdrive_service = None
     if use_gdrive_for_images:
         gdrive_service = create_drive_service()
@@ -1152,7 +1141,7 @@ def process_xml(use_gdrive_for_images=True):
     shop_image_urls = load_shop_images_cache()
     
     # Если не удалось загрузить из кэша, загружаем изображения магазина
-    if shop_image_urls is None and gdrive_service and SHOP_IMAGES:
+    if shop_image_urls is None and SHOP_IMAGES:
         shop_image_urls = []
         for i, shop_img_path in enumerate(SHOP_IMAGES):
             if os.path.exists(shop_img_path):
@@ -1163,10 +1152,11 @@ def process_xml(use_gdrive_for_images=True):
                     with open(shop_img_path, 'rb') as src, open(shop_output_path, 'wb') as dst:
                         dst.write(src.read())
                     
-                    # Загружаем изображение магазина в Google Drive
-                    shop_url = upload_image_to_yandex_disk(shop_output_path)
+                    # Генерируем локальный URL для изображения магазина
+                    shop_url = generate_local_image_url(shop_output_path)
                     if shop_url:
                         shop_image_urls.append(shop_url)
+                        print(f"Создан локальный URL для изображения магазина: {shop_url}")
                 except Exception as e:
                     pass  # Убираем детальное логирование ошибок
         
@@ -1190,8 +1180,8 @@ def process_xml(use_gdrive_for_images=True):
                 # Сохраняем очищенные данные
                 existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
                 
-                # Загружаем очищенный файл на Google Drive
-                file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+                # Загружаем очищенный файл на Яндекс.Диск
+                file_url = upload_to_yandex_disk(OUTPUT_EXCEL_PATH, force_update=True)
             
             if 'Id' in existing_data.columns:
                 # Получаем список существующих Id
@@ -1284,8 +1274,8 @@ def process_xml(use_gdrive_for_images=True):
         # Сохраняем обновленную таблицу
         existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
         
-        # Загружаем обновленную таблицу на Google Drive
-        file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+        # Загружаем обновленную таблицу на Яндекс.Диск
+        file_url = upload_to_yandex_disk(OUTPUT_EXCEL_PATH, force_update=True)
     
     # Ищем и удаляем нежелательный текст в описаниях (без логирования)
     unwanted_suffix = "</p><p>__________________________<br />Режим работы : 9.00-19.00<br />Отправляем всеми ТК СДЕК BOXBERRY Яндекс Почта России DPD Авито <br />Максимально упаковываем товар перед отправкой</p>"
@@ -1320,8 +1310,8 @@ def process_xml(use_gdrive_for_images=True):
             if price_brand_updated:
                 # Сохраняем обновленный DataFrame
                 existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
-                # Загружаем обновленный файл на Google Drive
-                file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
+                # Загружаем обновленный файл на Яндекс.Диск
+                file_url = upload_to_yandex_disk(OUTPUT_EXCEL_PATH, force_update=True)
         except Exception as e:
             pass
     
@@ -1566,9 +1556,9 @@ def process_xml(use_gdrive_for_images=True):
         existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
         print(f"Обновлен Excel-файл с добавленными изображениями для {len(existing_products_with_missing_images)} товаров")
         
-        # Загружаем файл на Google Drive
-        file_url = upload_to_google_drive(OUTPUT_EXCEL_PATH, force_update=True)
-        print(f"Обновленная таблица загружена на Google Drive")
+        # Загружаем файл на Яндекс.Диск
+        file_url = upload_to_yandex_disk(OUTPUT_EXCEL_PATH, force_update=True)
+        print(f"Обновленная таблица загружена на Яндекс.Диск")
         
         if not data:  # Если нет новых товаров для добавления
             return pd.DataFrame(), file_url
@@ -1579,7 +1569,7 @@ def process_xml(use_gdrive_for_images=True):
         # Возвращаем существующую ссылку если нет новых товаров
         file_url = None
         if os.path.exists(OUTPUT_EXCEL_PATH):
-            # Проверяем, есть ли файл на Google Drive
+            # Проверяем, есть ли файл на Яндекс.Диске
             try:
                 # Инициализируем Google Drive API с OAuth
                 drive_service = create_drive_service()
@@ -1643,36 +1633,59 @@ def process_xml(use_gdrive_for_images=True):
     # Создаем Excel-файл без вставки изображений, только ссылки
     excel_path, was_updated = save_to_excel(final_df)
     
-    # Загружаем файл на Google Drive только если он был обновлен
+    # Загружаем файл на Яндекс.Диск только если он был обновлен
     if was_updated:
-        file_url = upload_to_google_drive(excel_path, force_update=True)
-        print(f"Таблица обновлена и загружена на Google Drive")
+        file_url = upload_to_yandex_disk(excel_path, force_update=True)
+        print(f"Таблица обновлена и загружена на Яндекс.Диск")
     else:
         # Если файл не был обновлен, получаем существующую ссылку
-        file_url = upload_to_google_drive(excel_path, force_update=False)
+        file_url = upload_to_yandex_disk(excel_path, force_update=False)
         print(f"Таблица не изменилась, используем существующую ссылку")
     
     # Очищаем папку с обработанными изображениями после завершения всех операций
     clean_processed_images_folder()
     
+    # Очищаем папку с уникализированными изображениями после сохранения данных
+    clean_uniqualized_images_folder()
+    
     return final_df, file_url
 
-# Создаем алиас для запуска с Google Drive для изображений
-def process_xml_with_gdrive():
-    """Обработка XML-файла с загрузкой изображений на Google Drive"""
-    return process_xml(use_gdrive_for_images=True)
+def process_xml_with_yandex_disk():
+    """
+    Обрабатывает XML-файл с синхронизацией с Яндекс.Диском.
+    Возвращает: (DataFrame, file_url)
+    """
+    try:
+        # Сначала скачиваем актуальную версию Excel с Яндекс.Диска
+        sync_success = sync_excel_from_yandex_disk()
+        if not sync_success:
+            print("⚠️ Предупреждение: проблемы с синхронизацией с Яндекс.Диском")
+        
+        # Обрабатываем XML-файл
+        df = process_xml()
+        
+        # Загружаем обновленный файл на Яндекс.Диск
+        file_url = upload_to_yandex_disk(OUTPUT_EXCEL_PATH, force_update=True)
+        
+        return df, file_url
+        
+    except Exception as e:
+        print(f"Ошибка при обработке XML с Яндекс.Диском: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
 
 def job():
     """Основная функция для запуска процесса обработки"""
     print(f"🚀 Начало обработки: {datetime.now()}")
     
     # Сначала скачиваем актуальную версию Excel
-    print("📥 Синхронизация с Google Drive...")
-    sync_success = sync_excel_from_gdrive()
+    print("📥 Синхронизация с Яндекс.Диском...")
+    sync_success = sync_excel_from_yandex_disk()
     if sync_success:
-        print("✅ Синхронизация с Google Drive завершена успешно")
+        print("✅ Синхронизация с Яндекс.Диском завершена успешно")
     else:
-        print("⚠️ Синхронизация с Google Drive завершена с предупреждениями")
+        print("⚠️ Синхронизация с Яндекс.Диском завершена с предупреждениями")
     
     # Проверяем консистентность товаров в Excel
     if os.path.exists(OUTPUT_EXCEL_PATH):
@@ -1686,7 +1699,7 @@ def job():
     print("📄 Загрузка и обработка XML...")
     if download_xml():
         print("✅ XML-файл успешно загружен")
-        df, file_url = process_xml_with_gdrive()
+        df, file_url = process_xml_with_yandex_disk()
         print(f"✅ Обработка XML завершена")
         print(f"🔗 Ссылка на обработанный документ: {file_url}")
         
@@ -1701,89 +1714,17 @@ def job():
     print("=" * 50)
 
 def check_folder_access(drive_service, folder_id):
-    """
-    Проверяет доступ к папке на Google Drive и устанавливает права доступа если необходимо
-    
-    drive_service: Инициализированный сервис Google Drive API
-    folder_id: ID папки на Google Drive
-    
-    Возвращает: True если папка доступна, False если нет
-    """
-    if not folder_id:
-        print("❌ check_folder_access: folder_id пустой")
-        return False
-        
+    """Проверяет доступ к папке на Google Drive"""
     try:
-        print(f"🔍 Проверяю существование папки с ID: {folder_id}")
-        # Проверяем существование папки
-        folder = drive_service.files().get(fileId=folder_id, fields='id, name, parents').execute()
-        print(f"✅ Папка найдена: {folder.get('name')} (ID: {folder.get('id')})")
-        
-        # Выводим информацию о родительских папках
-        parents = folder.get('parents', [])
-        if parents:
-            print(f"📁 Родительские папки: {parents}")
-        else:
-            print("📁 Папка находится в корне")
-        
-        print(f"🔐 Проверяю права доступа к папке...")
-        # Проверяем права доступа
-        permissions = drive_service.permissions().list(fileId=folder_id).execute()
-        
-        print(f"📋 Найдено {len(permissions.get('permissions', []))} разрешений:")
-        for i, permission in enumerate(permissions.get('permissions', [])):
-            perm_type = permission.get('type', 'unknown')
-            perm_role = permission.get('role', 'unknown')
-            perm_email = permission.get('emailAddress', 'N/A')
-            print(f"   {i+1}. Тип: {perm_type}, Роль: {perm_role}, Email: {perm_email}")
-        
-        # Проверяем, есть ли публичный доступ
-        has_public_access = False
-        for permission in permissions.get('permissions', []):
-            if permission.get('type') == 'anyone':
-                has_public_access = True
-                print(f"✅ Найден публичный доступ с ролью: {permission.get('role')}")
-                break
-                
-        # Если нет публичного доступа, устанавливаем его
-        if not has_public_access:
-            print("⚠️ Публичный доступ отсутствует, устанавливаю...")
-            drive_service.permissions().create(
-                fileId=folder_id,
-                body={
-                    'type': 'anyone',
-                    'role': 'writer',
-                }
-            ).execute()
-            print("✅ Публичные права доступа установлены")
-        else:
-            print("✅ Публичный доступ уже настроен")
-            
+        # Пытаемся получить информацию о папке
+        folder = drive_service.files().get(fileId=folder_id).execute()
         return True
     except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "File not found" in error_str:
-            print(f"❌ Папка с ID {folder_id} не найдена (404 ошибка)")
-            print("💡 ВОЗМОЖНЫЕ ПРИЧИНЫ:")
-            print("   1. Папка была удалена")
-            print("   2. Неправильный ID папки") 
-            print("   3. У сервисного аккаунта нет доступа к папке")
-            print(f"📧 Email сервисного аккаунта: {get_service_account_email()}")
-            print("💡 РЕШЕНИЯ:")
-            print("   1. Дайте доступ к папке сервисному аккаунту")
-            print("   2. Или установите GOOGLE_DRIVE_FOLDER_ID = None для автоматического создания папки")
-        elif "403" in error_str or "Forbidden" in error_str:
-            print(f"❌ Нет доступа к папке {folder_id} (403 ошибка)")
-            print(f"📧 Email сервисного аккаунта: {get_service_account_email()}")
-            print("💡 РЕШЕНИЕ: Дайте доступ сервисному аккаунту к папке в Google Drive")
-        else:
-            print(f"❌ Ошибка при проверке доступа к папке {folder_id}: {e}")
-            import traceback
-            traceback.print_exc()
+        print(f"❌ Ошибка доступа к папке {folder_id}: {e}")
         return False
 
 def main():
-    """Основная функция для запуска скрипта"""
+    """Основная функция для запуска скрипта (для обратной совместимости)"""
     # Проверяем доступ к папке Google Drive, если указан ID
     if GOOGLE_DRIVE_FOLDER_ID:
         try:
@@ -1805,16 +1746,8 @@ def main():
         print("Проверка консистентности товаров в Excel перед началом работы...")
         check_excel_consistency()
     
-    # Сначала запускаем обработку однократно
+    # Запускаем обработку однократно
     job()
-    
-    # Настраиваем регулярное выполнение задачи (каждые 5 минут)
-    schedule.every(5).minutes.do(job)
-    
-    # Бесконечный цикл для выполнения запланированных задач
-    while True:
-        schedule.run_pending()
-        time.sleep(60)  # Проверка каждую минуту
 
 def clean_orphaned_derived_products(existing_data):
     """
@@ -1941,20 +1874,18 @@ def check_excel_consistency(excel_file_path=OUTPUT_EXCEL_PATH):
             df.to_excel(excel_file_path, index=False)
             print(f"Обновленный Excel-файл сохранен: {excel_file_path}")
             
-            # Загружаем на Google Drive
-            file_url = upload_to_google_drive(excel_file_path, force_update=True)
+            # Загружаем на Яндекс.Диск
+            file_url = upload_to_yandex_disk(excel_file_path, force_update=True)
             if file_url:
-                print(f"Обновленный Excel-файл загружен на Google Drive: {file_url}")
+                print(f"Обновленный Excel-файл загружен на Яндекс.Диск: {file_url}")
             
             return True
         else:
             print("В Excel-файле нет 'осиротевших' производных товаров")
             return False
-        
+            
     except Exception as e:
         print(f"Ошибка при проверке консистентности Excel-файла: {e}")
-        import traceback
-        traceback.print_exc()
         return False
 
 def uniqualize_image(input_image_path_or_url, output_path, city_index):
@@ -2141,7 +2072,7 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     base_ad_id: базовый ID товара
     city_index: индекс города (для вариации параметров уникализации)
     
-    Возвращает: URL уникализированного изображения (на Яндекс.Диске или локальный путь)
+    Возвращает: URL уникализированного изображения (локальный URL)
     """
     # Формируем уникальное имя файла
     output_filename = f"{base_ad_id}_derived_{city_index}_{uuid.uuid4().hex[:8]}.jpg"
@@ -2151,29 +2082,14 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     result_path = uniqualize_image(original_image_url, output_path, city_index)
     
     if result_path:
-        # Загрузка на Яндекс.Диск
-        try:
-            print(f"Начинаем загрузку уникализированного изображения {output_filename} на Яндекс.Диск")
-            file_url = upload_image_to_yandex_disk(result_path)
-            if file_url:
-                print(f"Уникализированное изображение {output_filename} загружено на Яндекс.Диск: {file_url}")
-                return file_url
-            else:
-                print(f"Ошибка: не удалось получить URL для изображения {output_filename}")
-                # В случае ошибки возвращаем локальный путь
-                return output_path
-        except Exception as e:
-            print(f"Исключение при загрузке на Яндекс.Диск: {e}")
-            import traceback
-            traceback.print_exc()
-            # В случае исключения возвращаем локальный путь
-            return output_path
+        # Генерируем локальный URL для изображения
+        local_url = generate_local_image_url(result_path)
+        print(f"Уникализированное изображение {output_filename} сохранено локально: {local_url}")
+        return local_url
     else:
-        # Если Яндекс.Диск не используется, возвращаем локальный путь
-        return output_path
-    
-    # В случае ошибки возвращаем исходный URL
-    return original_image_url
+        print(f"Ошибка: не удалось уникализировать изображение {output_filename}")
+        # В случае ошибки возвращаем исходный URL
+        return original_image_url
 
 def update_existing_records(existing_data, xml_root):
     """
@@ -2274,37 +2190,37 @@ def update_existing_records(existing_data, xml_root):
     
     return existing_data, changes_made
 
-def merge_with_gdrive_changes(local_data, gdrive_data):
+def merge_with_yadisk_changes(local_data, yadisk_data):
     """
-    Объединяет локальные данные с изменениями из Google Drive таблицы.
+    Объединяет локальные данные с изменениями из Яндекс.Диска.
     Сохраняет все ручные изменения пользователя, обновляя только определенные поля из XML.
     
     local_data: DataFrame с локальными данными (может быть None)
-    gdrive_data: DataFrame с данными из Google Drive
+    yadisk_data: DataFrame с данными из Яндекс.Диска
     
     Возвращает: объединенный DataFrame с сохраненными пользовательскими изменениями
     """
-    if gdrive_data is None or gdrive_data.empty:
-        print("📄 Данные из Google Drive пусты, используются локальные данные")
+    if yadisk_data is None or yadisk_data.empty:
+        print("📄 Данные из Яндекс.Диска пусты, используются локальные данные")
         return local_data
     
     if local_data is None or local_data.empty:
-        print("📄 Локальные данные отсутствуют, используются данные из Google Drive")
-        return gdrive_data
+        print("📄 Локальные данные отсутствуют, используются данные из Яндекс.Диска")
+        return yadisk_data
     
-    print("🔄 Объединение локальных данных с изменениями из Google Drive...")
+    print("🔄 Объединение локальных данных с изменениями из Яндекс.Диска...")
     
-    # Поля, которые могут обновляться из XML (остальные сохраняются из Google Drive)
+    # Поля, которые могут обновляться из XML (остальные сохраняются из Яндекс.Диска)
     xml_updatable_fields = {'Price', 'Brand', 'ImageUrls', 'CompatibleCars'}
     
-    # Поля, которые всегда сохраняются из Google Drive (пользовательские изменения)
-    user_editable_fields = set(gdrive_data.columns) - xml_updatable_fields - {'Id'}
+    # Поля, которые всегда сохраняются из Яндекс.Диска (пользовательские изменения)
+    user_editable_fields = set(yadisk_data.columns) - xml_updatable_fields - {'Id'}
     
     print(f"📊 Поля, обновляемые из XML: {xml_updatable_fields}")
-    print(f"🔒 Поля, сохраняемые из Google Drive: {user_editable_fields}")
+    print(f"🔒 Поля, сохраняемые из Яндекс.Диска: {user_editable_fields}")
     
-    # Создаем копию данных из Google Drive как основу
-    merged_data = gdrive_data.copy()
+    # Создаем копию данных из Яндекс.Диска как основу
+    merged_data = yadisk_data.copy()
     
     # Создаем словарь локальных данных для быстрого поиска по ID
     local_dict = {}
@@ -2336,341 +2252,142 @@ def merge_with_gdrive_changes(local_data, gdrive_data):
             if row_updated:
                 updated_count += 1
     
-    # Добавляем новые записи из локальных данных, которых нет в Google Drive
-    gdrive_ids = set(str(id_val) for id_val in gdrive_data['Id'].astype(str).tolist()) if 'Id' in gdrive_data.columns else set()
+    # Добавляем новые записи из локальных данных, которых нет в Яндекс.Диске
+    yadisk_ids = set(str(id_val) for id_val in yadisk_data['Id'].astype(str).tolist()) if 'Id' in yadisk_data.columns else set()
     local_ids = set(str(id_val) for id_val in local_data['Id'].astype(str).tolist()) if 'Id' in local_data.columns else set()
     
-    new_ids = local_ids - gdrive_ids
+    new_ids = local_ids - yadisk_ids
+    
     if new_ids:
-        print(f"➕ Найдено {len(new_ids)} новых записей в локальных данных")
+        print(f"📥 Добавление {len(new_ids)} новых записей из локальных данных")
+        new_rows = []
         for new_id in new_ids:
             if new_id in local_dict:
-                new_row = local_dict[new_id].to_dict()
-                merged_data = pd.concat([merged_data, pd.DataFrame([new_row])], ignore_index=True)
-                print(f"  ➕ Добавлена новая запись: {new_id}")
+                new_rows.append(local_dict[new_id])
+        
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            merged_data = pd.concat([merged_data, new_df], ignore_index=True)
     
-    print(f"✅ Объединение завершено: обновлено {updated_count} записей, добавлено {len(new_ids) if new_ids else 0} новых записей")
+    print(f"✅ Объединение завершено. Обновлено записей: {updated_count}, добавлено новых: {len(new_ids) if new_ids else 0}")
     
     return merged_data
 
 def authenticate_google_service_account():
     """
-    Аутентификация через Google Service Account для Google Drive API
-    
-    Возвращает: credentials объект для использования с Google API
+    Заглушка для совместимости - Google Drive больше не используется
     """
-    try:
-        if not os.path.exists(GOOGLE_CRED_PATH):
-            print(f"❌ Файл с Service Account credentials не найден: {GOOGLE_CRED_PATH}")
-            return None
-        
-        print("Загружаю Service Account credentials...")
-        credentials = service_account.Credentials.from_service_account_file(
-            GOOGLE_CRED_PATH, scopes=SCOPES)
-        
-        print("✅ Service Account аутентификация успешно завершена")
-        return credentials
-        
-    except Exception as e:
-        print(f"❌ Ошибка при Service Account аутентификации: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    print("❌ Ошибка при аутентификации: Google Drive больше не используется, используйте Яндекс.Диск")
+    return None
 
 def create_drive_service():
     """
-    Создает и возвращает сервис Google Drive API с Service Account аутентификацией
-    
-    Возвращает: объект сервиса Google Drive API или None в случае ошибки
+    Заглушка для совместимости - Google Drive больше не используется
     """
-    try:
-        credentials = authenticate_google_service_account()
-        if not credentials:
-            print("❌ Не удалось получить Service Account credentials")
-            return None
-        
-        service = build('drive', 'v3', credentials=credentials)
-        print("✅ Google Drive API сервис успешно инициализирован с Service Account")
-        return service
-    except Exception as e:
-        print(f"❌ Ошибка при создании Google Drive сервиса: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def get_direct_download_link(disk_path):
-    """
-    Получает прямую ссылку для скачивания/просмотра файла в Яндекс.Диске
-    
-    Args:
-        disk_path (str): Путь к файлу на Яндекс.Диске
-    
-    Returns:
-        str: Прямая ссылка на файл или None в случае ошибки
-    """
-    
-    # URL для получения ссылки на скачивание
-    download_url = "https://cloud-api.yandex.net/v1/disk/resources/download"
-    
-    # Заголовки для авторизации
-    headers = {
-        'Authorization': f'OAuth {YANDEX_OAUTH_TOKEN}',
-        'Content-Type': 'application/json'
-    }
-    
-    # Параметры запроса
-    params = {
-        'path': disk_path
-    }
-    
-    try:
-        # Получаем ссылку для скачивания
-        response = requests.get(download_url, headers=headers, params=params)
-        
-        if response.status_code == 200:
-            download_data = response.json()
-            direct_link = download_data.get('href')
-            
-            if direct_link:
-                print(f"🔗 Прямая ссылка получена: {direct_link}")
-                return direct_link
-            else:
-                print("⚠️  Не удалось получить прямую ссылку")
-                return None
-        elif response.status_code == 404:
-            print("❌ Файл не найден на диске")
-            return None
-        elif response.status_code == 401:
-            print("❌ Ошибка авторизации при получении ссылки")
-            return None
-        else:
-            print(f"❌ Ошибка при получении ссылки: {response.status_code}")
-            print(f"Ответ сервера: {response.text}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Ошибка сети при получении ссылки: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ Неожиданная ошибка при получении ссылки: {e}")
-        return None
-
-def delete_file_from_yandex_disk(disk_path):
-    """
-    Удаляет файл с Яндекс.Диска
-    
-    Args:
-        disk_path (str): Путь к файлу на Яндекс.Диске
-    
-    Returns:
-        bool: True если файл удален или не существовал, False в случае ошибки
-    """
-    
-    # URL для удаления файла
-    delete_url = "https://cloud-api.yandex.net/v1/disk/resources"
-    
-    # Заголовки для авторизации
-    headers = {
-        'Authorization': f'OAuth {YANDEX_OAUTH_TOKEN}',
-        'Content-Type': 'application/json'
-    }
-    
-    # Параметры запроса
-    params = {
-        'path': disk_path
-    }
-    
-    try:
-        # Удаляем файл
-        response = requests.delete(delete_url, headers=headers, params=params)
-        
-        if response.status_code == 204:
-            print(f"🗑️  Существующий файл {disk_path} удален")
-            return True
-        elif response.status_code == 404:
-            print(f"📄 Файл {disk_path} не существует, можно загружать новый")
-            return True
-        else:
-            print(f"⚠️  Ошибка при удалении файла: {response.status_code}")
-            print(f"Ответ сервера: {response.text}")
-            return False
-            
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Ошибка сети при удалении файла: {e}")
-        return False
-    except Exception as e:
-        print(f"❌ Неожиданная ошибка при удалении файла: {e}")
-        return False
-
-def upload_image_to_yandex_disk(file_path, max_retries=3, retry_delay=5):
-    """
-    Загружает файл на Яндекс.Диск и возвращает прямую ссылку на файл
-    
-    Args:
-        file_path (str): Путь к локальному файлу
-        max_retries: Максимальное количество попыток загрузки
-        retry_delay: Задержка между попытками в секундах
-    
-    Returns:
-        str: Прямая ссылка на загруженный файл или None в случае ошибки
-    """
-    
-    # Проверяем существование файла
-    if not os.path.exists(file_path):
-        return None
-    
-    for attempt in range(1, max_retries + 1):
-        try:
-            file_name = os.path.basename(file_path)
-            
-            # Формируем путь на Яндекс.Диске
-            disk_folder = YANDEX_IMAGES_FOLDER
-            
-            # Убеждаемся, что путь начинается с /
-            if not disk_folder.startswith("/"):
-                disk_folder = "/" + disk_folder
-            
-            # Убеждаемся, что путь заканчивается на /
-            if not disk_folder.endswith("/"):
-                disk_folder += "/"
-            
-            # Формируем полный путь к файлу на диске
-            disk_file_path = disk_folder + file_name
-            
-            # Сначала удаляем файл, если он существует
-            delete_file_from_yandex_disk(disk_file_path)
-            
-            # Базовый URL API Яндекс.Диска
-            base_url = "https://cloud-api.yandex.net/v1/disk/resources/upload"
-            
-            # Заголовки для авторизации
-            headers = {
-                'Authorization': f'OAuth {YANDEX_OAUTH_TOKEN}',
-                'Content-Type': 'application/json'
-            }
-            
-            # Параметры запроса
-            params = {
-                'path': disk_file_path
-            }
-            
-            # Получаем ссылку для загрузки
-            response = requests.get(base_url, headers=headers, params=params)
-            
-            if response.status_code == 200:
-                upload_data = response.json()
-                upload_url = upload_data.get('href')
-                upload_method = upload_data.get('method', 'PUT')
-                
-                # Загружаем файл
-                with open(file_path, 'rb') as file:
-                    file_data = file.read()
-                    if upload_method.upper() == 'PUT':
-                        upload_response = requests.put(upload_url, data=file_data)
-                    else:
-                        upload_response = requests.post(upload_url, data=file_data)
-                
-                if upload_response.status_code in [200, 201, 202]:
-                    # Получаем прямую ссылку на файл
-                    direct_link = get_direct_download_link(disk_file_path)
-                    
-                    if direct_link:
-                        return direct_link
-                    else:
-                        return None
-                        
-            elif response.status_code == 401:
-                print("❌ Ошибка авторизации Яндекс.Диск. Проверьте OAuth токен.")
-                return None
-                
-            elif response.status_code == 413:
-                print("❌ Файл слишком большой для загрузки.")
-                return None
-                
-        except requests.exceptions.RequestException:
-            pass
-            
-        except Exception:
-            pass
-        
-        if attempt < max_retries:
-            time.sleep(retry_delay)
-    
-    # Если все попытки неудачны, возвращаем None
+    print("❌ Ошибка при инициализации Google Drive API")
+    print("Уникализированные изображения будут сохранены локально.")
     return None
-
-def create_or_find_folder(drive_service, folder_name):
-    """
-    Создает или находит папку на Google Drive
-    
-    drive_service: Инициализированный сервис Google Drive API
-    folder_name: Название папки
-    
-    Возвращает: ID папки или None если не удалось создать/найти
-    """
-    try:
-        # Сначала ищем существующую папку
-        query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        response = drive_service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name)'
-        ).execute()
-        
-        files = response.get('files', [])
-        if files:
-            folder_id = files[0]['id']
-            print(f"📁 Найдена существующая папка '{folder_name}' с ID: {folder_id}")
-            return folder_id
-        
-        # Если папка не найдена, создаем новую
-        print(f"📁 Создание новой папки '{folder_name}'...")
-        file_metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        
-        folder = drive_service.files().create(
-            body=file_metadata,
-            fields='id'
-        ).execute()
-        
-        folder_id = folder.get('id')
-        print(f"✅ Папка '{folder_name}' создана с ID: {folder_id}")
-        
-        # Устанавливаем публичный доступ к папке
-        try:
-            drive_service.permissions().create(
-                fileId=folder_id,
-                body={
-                    'type': 'anyone',
-                    'role': 'writer',
-                }
-            ).execute()
-            print(f"🔓 Установлены публичные права для папки '{folder_name}'")
-        except Exception as perm_error:
-            print(f"⚠️ Не удалось установить публичные права для папки: {perm_error}")
-        
-        return folder_id
-        
-    except Exception as e:
-        print(f"❌ Ошибка при создании/поиске папки '{folder_name}': {e}")
-        return None
 
 def get_service_account_email():
     """
-    Получает email сервисного аккаунта из файла конфигурации
-    
-    Возвращает: email сервисного аккаунта или 'неизвестно'
+    Заглушка для совместимости - Google Drive больше не используется
     """
-    try:
-        if os.path.exists(GOOGLE_CRED_PATH):
-            with open(GOOGLE_CRED_PATH, 'r') as f:
-                cred_data = json.load(f)
-                return cred_data.get('client_email', 'неизвестно')
-    except Exception:
-        pass
-    return 'неизвестно'
+    return 'не используется'
 
+# Django Management Command
+from django.core.management.base import BaseCommand
+
+class Command(BaseCommand):
+    help = 'Обновляет данные из XML, обрабатывает изображения и создает Excel файл'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--max-items',
+            type=int,
+            help='Максимальное количество товаров для обработки',
+        )
+        parser.add_argument(
+            '--skip-sync',
+            action='store_true',
+            help='Пропустить синхронизацию с Яндекс.Диском',
+        )
+        parser.add_argument(
+            '--check-consistency',
+            action='store_true',
+            help='Только проверить консистентность Excel файла',
+        )
+
+    def handle(self, *args, **options):
+        """Основной метод выполнения команды"""
+        global MAX_ITEMS
+        
+        # Проверяем и запускаем Django сервер если нужно
+        ensure_django_server_running()
+        
+        # Устанавливаем максимальное количество товаров если указано
+        if options.get('max_items'):
+            MAX_ITEMS = options['max_items']
+            self.stdout.write(f"Установлено ограничение: {MAX_ITEMS} товаров")
+        
+        # Если нужно только проверить консистентность
+        if options.get('check_consistency'):
+            self.stdout.write("🔍 Проверка консистентности товаров в Excel...")
+            if os.path.exists(OUTPUT_EXCEL_PATH):
+                consistency_changes = check_excel_consistency()
+                if consistency_changes:
+                    self.stdout.write(self.style.SUCCESS("✅ Консистентность восстановлена, изменения сохранены"))
+                else:
+                    self.stdout.write(self.style.SUCCESS("✅ Данные консистентны, изменений не требуется"))
+            else:
+                self.stdout.write(self.style.WARNING("⚠️ Excel файл не найден"))
+            return
+        
+        # Проверяем консистентность товаров в Excel перед началом работы
+        if os.path.exists(OUTPUT_EXCEL_PATH):
+            self.stdout.write("🔍 Проверка консистентности товаров в Excel перед началом работы...")
+            check_excel_consistency()
+        
+        # Запускаем основную логику обработки
+        self.stdout.write(f"🚀 Начало обработки: {datetime.now()}")
+        
+        # Синхронизация с Яндекс.Диском (если не пропускаем)
+        if not options.get('skip_sync'):
+            self.stdout.write("📥 Синхронизация с Яндекс.Диском...")
+            sync_success = sync_excel_from_yandex_disk()
+            if sync_success:
+                self.stdout.write(self.style.SUCCESS("✅ Синхронизация с Яндекс.Диском завершена успешно"))
+            else:
+                self.stdout.write(self.style.WARNING("⚠️ Синхронизация с Яндекс.Диском завершена с предупреждениями"))
+        
+        # Проверяем консистентность товаров в Excel
+        if os.path.exists(OUTPUT_EXCEL_PATH):
+            self.stdout.write("🔍 Проверка консистентности товаров в Excel...")
+            consistency_changes = check_excel_consistency()
+            if consistency_changes:
+                self.stdout.write(self.style.SUCCESS("✅ Консистентность восстановлена, изменения сохранены"))
+            else:
+                self.stdout.write(self.style.SUCCESS("✅ Данные консистентны, изменений не требуется"))
+        
+        # Загрузка и обработка XML
+        self.stdout.write("📄 Загрузка и обработка XML...")
+        if download_xml():
+            self.stdout.write(self.style.SUCCESS("✅ XML-файл успешно загружен"))
+            df, file_url = process_xml_with_yandex_disk()
+            self.stdout.write(self.style.SUCCESS("✅ Обработка XML завершена"))
+            if file_url:
+                self.stdout.write(f"🔗 Ссылка на обработанный документ: {file_url}")
+            
+            # Дополнительная очистка папки processed_images
+            self.stdout.write("🧹 Очистка временных файлов...")
+            clean_processed_images_folder()
+            self.stdout.write(self.style.SUCCESS("✅ Очистка завершена"))
+        else:
+            self.stdout.write(self.style.ERROR("❌ Ошибка при загрузке XML-файла"))
+            
+        self.stdout.write(self.style.SUCCESS(f"🏁 Обработка завершена: {datetime.now()}"))
+        self.stdout.write("=" * 50)
+
+# Для обратной совместимости, если кто-то запустит файл напрямую
 if __name__ == "__main__":
-    main()
+    # Удаляем бесконечный цикл и schedule, просто запускаем job() один раз
+    job()

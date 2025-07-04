@@ -1,36 +1,25 @@
-import time
-import schedule
-from datetime import datetime
-from importlib.machinery import SourceFileLoader
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Загружаем модуль main.py как отдельный модуль
-main_module = SourceFileLoader("main_module", "/home/avito/avito_add_image/main.py").load_module()
-download_xml = main_module.download_xml
-process_xml_with_gdrive = main_module.process_xml_with_gdrive
+from main.management.commands.update_rows import job
+import main.management.commands.update_rows as main_module
 
-def job():
-    """Основная функция для запуска процесса обработки"""
-    print(f"Начало обработки: {datetime.now()}")
-    
-    if download_xml():
-        df, file_url = process_xml_with_gdrive()
-        print(f"Ссылка на обработанный документ: {file_url}")
-    print(f"Обработка завершена: {datetime.now()}")
+process_xml_with_yandex_disk = main_module.process_xml_with_yandex_disk
 
-def main():
-    """Основная функция демона"""
-    print("Демон запущен...")
-    
-    # Запускаем задачу сразу при старте
+def run_job():
+    """Запускает задачу обработки XML"""
+    print("Запуск задачи обработки XML...")
     job()
-    
-    # Планируем выполнение каждые 5 минут
-    schedule.every(5).minutes.do(job)
-    
-    # Бесконечный цикл для выполнения запланированных задач
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+
+def run_xml_processing():
+    """Запускает только обработку XML с Яндекс.Диском"""
+    print("Запуск обработки XML с Яндекс.Диском...")
+    df, file_url = process_xml_with_yandex_disk()
+    if df is not None:
+        print(f"Обработка завершена успешно. Ссылка: {file_url}")
+    else:
+        print("Ошибка при обработке XML")
 
 if __name__ == "__main__":
-    main() 
+    run_job() 
