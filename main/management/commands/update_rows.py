@@ -25,9 +25,9 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_global.xlsx"
+OUTPUT_EXCEL_PATH = "few_cities_ya.xlsx"
 YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
-MAX_ITEMS = 9999999999999 # Убираем ограничение для продакшена
+MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
 YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
@@ -386,6 +386,104 @@ def process_image_urls(original_urls, output_dir, ad_id, shop_image_path=None):
             local_url = generate_local_image_url(result_path)
             processed_urls.append(local_url)
             print(f"Обработано изображение: {output_filename} -> {local_url}")
+    
+    # Изображения магазина теперь добавляются в основной функции process_xml,
+    # поэтому здесь мы их не добавляем
+    
+    return processed_urls
+
+def process_images_for_original_products(ad_element, output_dir, ad_id, shop_image_path=None):
+    """Обработка изображений для оригинальных товаров с сохранением в uniqualized_images"""
+    
+    # Попробуем получить изображения различными способами
+    images = ad_element.findall(".//Image")
+    
+    if not images:
+        # Попробуем другой способ поиска изображений
+        images_section = ad_element.find("Images")
+        if images_section is not None:
+            images = images_section.findall("Image")
+    
+    if not images:
+        # Попробуем получить изображения напрямую из атрибутов url
+        try:
+            # Проверим, есть ли элемент Images и что в нем
+            images_section = ad_element.find("Images")
+            if images_section is not None:
+                for child in images_section:
+                    if 'url' in child.attrib:
+                        # Создаем список URL из атрибутов
+                        original_urls = [child.attrib['url'] for child in images_section if 'url' in child.attrib]
+                        
+                        # Обработка изображений по найденным URL
+                        return process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path)
+        except Exception as e:
+            pass  # Убираем детальное логирование ошибок
+        
+        return []  # Нет изображений для обработки
+
+    os.makedirs(output_dir, exist_ok=True)
+    
+    original_urls = []  # Список исходных URL изображений
+
+    # Сбор всех URL изображений
+    for i, img in enumerate(images):
+        # Сначала проверяем текст элемента
+        img_url = img.text
+        
+        # Если текст пустой, пробуем получить URL из атрибута
+        if not img_url and 'url' in img.attrib:
+            img_url = img.attrib['url']
+            
+        if img_url:
+            original_urls.append(img_url)
+    
+    return process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path)
+
+def process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path=None):
+    """Обработка URL изображений для оригинальных товаров с сохранением в uniqualized_images"""
+    if not original_urls:
+        return []
+
+    processed_urls = []  # Список URL обработанных изображений
+
+    # Обработка изображений
+    for i, img_url in enumerate(original_urls):
+        if not img_url:
+            continue
+
+        # Определение пути сохранения в папку uniqualized_images
+        output_filename = f"{ad_id}_original_{i+1}_{uuid.uuid4().hex[:8]}.jpg"
+        output_path = os.path.join(output_dir, output_filename)
+
+        # Определяем, нужно ли использовать add_shop_image для первого изображения
+        if i == 0 and shop_image_path and os.path.exists(shop_image_path):
+            result_path = add_shop_image(img_url, shop_image_path, output_path)
+        elif i < 4:  # Накладываем водяной знак только на первые 4 изображения
+            # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
+            # Используем остаток от деления на длину списка, чтобы не выйти за границы
+            overlay_index = i % len(OVERLAY_IMAGES)
+            overlay_path = OVERLAY_IMAGES[overlay_index]
+            
+            result_path = overlay_image(img_url, overlay_path, output_path)
+        else:
+            # Для остальных изображений просто сохраняем без водяного знака
+            try:
+                response = requests.get(img_url)
+                if response.status_code == 200:
+                    with open(output_path, 'wb') as f:
+                        f.write(response.content)
+                    result_path = output_path
+                else:
+                    result_path = None
+            except Exception as e:
+                result_path = None
+        
+        if result_path:
+            # Генерируем локальный URL для изображения
+            local_url = generate_local_image_url(result_path)
+            processed_urls.append(local_url)
+            print(f"Обработано изображение оригинального товара: {output_filename} -> {local_url}")
     
     # Изображения магазина теперь добавляются в основной функции process_xml,
     # поэтому здесь мы их не добавляем
@@ -1132,6 +1230,10 @@ def process_xml(use_gdrive_for_images=True):
     # Создание директории для изображений
     output_dir = create_output_dir()
     
+    # Создание директории для оригинальных товаров (в uniqualized_images)
+    original_products_dir = LOCAL_UNIQUE_IMAGES_DIR
+    os.makedirs(original_products_dir, exist_ok=True)
+    
     # Инициализация Google Drive API для изображений (только для изображений, не для Excel)
     gdrive_service = None
     if use_gdrive_for_images:
@@ -1358,8 +1460,8 @@ def process_xml(use_gdrive_for_images=True):
         
         # Проверяем, является ли этот товар существующим товаром без изображений
         if ad_id in existing_products_with_missing_images:
-            # Обработка изображений
-            processed_images = process_images(ad, output_dir, ad_id)
+            # Обработка изображений для существующих товаров (используем папку uniqualized_images)
+            processed_images = process_images_for_original_products(ad, original_products_dir, ad_id)
             if processed_images:
                 # Добавляем ссылки на изображения магазина, если они есть
                 all_images = list(processed_images)
@@ -1645,8 +1747,8 @@ def process_xml(use_gdrive_for_images=True):
     # Очищаем папку с обработанными изображениями после завершения всех операций
     clean_processed_images_folder()
     
-    # Очищаем папку с уникализированными изображениями после сохранения данных
-    clean_uniqualized_images_folder()
+    # НЕ очищаем папку с уникализированными изображениями - они должны сохраняться!
+    # clean_uniqualized_images_folder()
     
     return final_df, file_url
 
