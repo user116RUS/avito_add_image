@@ -1462,6 +1462,7 @@ def process_xml(use_gdrive_for_images=True):
         if ad_id in existing_products_with_missing_images:
             # Обработка изображений для существующих товаров (используем папку uniqualized_images)
             processed_images = process_images_for_original_products(ad, original_products_dir, ad_id)
+            processed_images_dict[ad_id] = processed_images
             if processed_images:
                 # Добавляем ссылки на изображения магазина, если они есть
                 all_images = list(processed_images)
@@ -1569,7 +1570,7 @@ def process_xml(use_gdrive_for_images=True):
                     description.text = description.text + NEW_DESCRIPTION
         
         # Обработка изображений
-        processed_images = process_images(ad, output_dir, ad_id)
+        processed_images = process_images_for_original_products(ad, original_products_dir, ad_id)
         processed_images_dict[ad_id] = processed_images
         
         # Если есть секция Images, заменяем её в XML
