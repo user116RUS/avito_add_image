@@ -25,10 +25,10 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_ya.xlsx"
+OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx"
 YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
 MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
-YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
+YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/prod/')  # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Конфигурация для локального хранения изображений
@@ -1517,6 +1517,13 @@ def process_xml(use_gdrive_for_images=True):
             skipped_count += 1
             continue
         
+        # НОВАЯ ЛОГИКА: Пропускаем товары, которые уже существуют в таблице (даже без производных записей)
+        # Обрабатываем изображения только для полностью новых товаров
+        if is_existing_product:
+            skipped_count += 1
+            print(f"⏭️  Пропущен существующий товар: {ad_id}")
+            continue
+        
         processed_count += 1
         
         # МИНИМАЛЬНОЕ ЛОГИРОВАНИЕ - только ID товара и процент
@@ -1749,6 +1756,16 @@ def process_xml(use_gdrive_for_images=True):
     
     # НЕ очищаем папку с уникализированными изображениями - они должны сохраняться!
     # clean_uniqualized_images_folder()
+    
+    # Выводим итоговую статистику обработки
+    print("=" * 50)
+    print("📊 ИТОГОВАЯ СТАТИСТИКА ОБРАБОТКИ:")
+    print(f"📄 Всего товаров в XML: {total_ads}")
+    print(f"🆕 Новых товаров обработано: {processed_count}")
+    print(f"⏭️  Существующих товаров пропущено: {skipped_count}")
+    print(f"🖼️  Товаров с добавленными изображениями: {len(existing_products_with_missing_images)}")
+    print(f"📊 Итоговый размер таблицы: {len(final_df)} строк")
+    print("=" * 50)
     
     return final_df, file_url
 
