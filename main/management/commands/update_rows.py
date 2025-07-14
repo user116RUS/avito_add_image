@@ -25,10 +25,11 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx"
-YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
+OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx" # Токен Яндекс.Диска из переменной окружения
+YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')
+disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
 MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
-YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
+YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')   # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Конфигурация для локального хранения изображений
@@ -108,8 +109,7 @@ NEW_DESCRIPTION = """</p><p><strong>Автозапчасти на Волнянс
 OVERLAY_IMAGES = [
     "images/1.png",
     "images/2.png",
-    "images/3.png",
-    "images/4.png"
+    "images/3.png"
 ]
 
 # Путь к изображению для наложения водяного знака
@@ -175,124 +175,98 @@ def create_output_dir():
     
     return LOCAL_IMAGES_DIR
 
-def generate_local_image_url(file_path):
-    """
-    Генерирует URL для локального изображения на сервере
-    
-    Args:
-        file_path (str): Локальный путь к файлу
-    
-    Returns:
-        str: URL для доступа к изображению через веб-сервер
-    """
-    # Получаем относительный путь от корня проекта
-    if file_path.startswith(LOCAL_IMAGES_DIR):
-        # Для обработанных изображений
-        relative_path = file_path.replace(LOCAL_IMAGES_DIR, "/media/processed_images", 1)
-    elif file_path.startswith(LOCAL_UNIQUE_IMAGES_DIR):
-        # Для уникализированных изображений
-        relative_path = file_path.replace(LOCAL_UNIQUE_IMAGES_DIR, "/media/uniqualized_images", 1)
-    else:
-        # Для других файлов в media
-        relative_path = file_path.replace("media/", "/media/", 1)
-    
-    # Формируем полный URL
-    full_url = SERVER_BASE_URL + relative_path
-    return full_url
 
 def overlay_image(base_image_url, overlay_path, output_path):
-    """Наложение одного изображения на другое с сохранением соотношения сторон"""
+    """Наложение одного изображения на другое с сохранением соотношения сторон и загрузкой на Яндекс.Диск"""
     try:
-        # Загрузка базового изображения
         response = requests.get(base_image_url)
         if response.status_code != 200:
             return None
-            
         base_img = PILImage.open(BytesIO(response.content)).convert("RGBA")
-        
-        # Открытие изображения для наложения и конвертация в RGBA
         overlay_img = PILImage.open(overlay_path).convert("RGBA")
-        
-        # Получаем размеры базового изображения
         base_width, base_height = base_img.size
-        
-        # Изменяем размер наложения, сохраняя соотношение сторон
         overlay_width, overlay_height = overlay_img.size
         ratio = min(base_width / overlay_width, base_height / overlay_height)
         new_overlay_width = int(overlay_width * ratio)
         new_overlay_height = int(overlay_height * ratio)
-        
-        # Изменение размера наложения с сохранением соотношения сторон
         overlay_img = overlay_img.resize((new_overlay_width, new_overlay_height), PILImage.LANCZOS)
-        
-        # Вычисляем позицию для размещения наложения внизу изображения
-        # Горизонтально центрируем, а вертикально смещаем вниз
         paste_x = (base_width - new_overlay_width) // 2
-        
-        # Минимальный отступ от нижнего края - всего 0.5% высоты (уменьшено с 2%)
-        bottom_margin = int(base_height * 0.005)  # 0.5% от высоты для минимального отступа снизу
+        bottom_margin = int(base_height * 0.005)
         paste_y = base_height - new_overlay_height - bottom_margin
-        
-        # Проверка, чтобы изображение не вышло за пределы
         if paste_y < 0:
             paste_y = 0
-        
-        # Создаем новое изображение с правильными каналами и прозрачностью
         result = PILImage.new("RGBA", base_img.size, (0, 0, 0, 0))
         result.paste(base_img, (0, 0))
         result.paste(overlay_img, (paste_x, paste_y), overlay_img)
-        
-        # Конвертация в RGB для сохранения в JPEG
         result = result.convert("RGB")
-        
-        # Сохранение результата
         result.save(output_path)
-        return output_path
-    except Exception:
+        yadisk_url = upload_image_to_yandex_disk(output_path)
+        return yadisk_url
+    except Exception as e:
+        print(f"Ошибка overlay_image: {e}")
         return None
 
 def add_shop_image(base_image_url, shop_image_path, output_path):
-    """Добавляет изображение магазина к первому изображению товара в виде коллажа"""
+    """Добавляет изображение магазина к первому изображению товара в виде коллажа и загружает на Яндекс.Диск"""
     try:
-        # Загрузка базового изображения товара
         response = requests.get(base_image_url)
         if response.status_code != 200:
             return None
-            
         base_img = PILImage.open(BytesIO(response.content)).convert("RGB")
-        
-        # Открытие изображения магазина
         shop_img = PILImage.open(shop_image_path).convert("RGB")
-        
-        # Получаем размеры базового изображения
         base_width, base_height = base_img.size
-        
-        # Создаем новое изображение-коллаж, достаточно широкое для двух изображений
-        # Ширина = ширина базового изображения * 2 (с небольшим отступом)
-        # Высота = высота базового изображения
-        collage_width = base_width * 2 + 20  # 20 пикселей отступ между изображениями
+        collage_width = base_width * 2 + 20
         collage_height = base_height
-        
-        # Изменяем размер изображения магазина, чтобы оно соответствовало высоте базового изображения
         shop_width, shop_height = shop_img.size
         new_shop_height = base_height
         new_shop_width = int(shop_width * (new_shop_height / shop_height))
         shop_img = shop_img.resize((new_shop_width, new_shop_height), PILImage.LANCZOS)
-        
-        # Создаем коллаж (белый фон)
         collage = PILImage.new("RGB", (collage_width, collage_height), (255, 255, 255))
-        
-        # Размещаем базовое изображение слева
         collage.paste(base_img, (0, 0))
-        
-        # Размещаем изображение магазина справа
         collage.paste(shop_img, (base_width + 20, 0))
-        
-        # Сохраняем результат
         collage.save(output_path)
-        return output_path
-    except Exception:
+        yadisk_url = upload_image_to_yandex_disk(output_path)
+        return yadisk_url
+    except Exception as e:
+        print(f"Ошибка add_shop_image: {e}")
         return None
+
+
+def upload_images_to_yandex_disk(local_paths, remote_folder="/avito_images/"):
+    """
+    Загружает список локальных изображений на Яндекс.Диск и возвращает список публичных ссылок.
+    Если файл уже есть на Яндекс.Диске, используется существующая публичная ссылка.
+    """
+    public_urls = []
+    for local_path in local_paths:
+        try:
+            file_name = os.path.basename(local_path)
+            remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
+            # Проверяем, существует ли файл на Яндекс.Диске
+            file_exists = False
+            try:
+                meta = disk.get_meta(remote_path)
+                file_exists = True
+            except Exception:
+                file_exists = False
+            if file_exists:
+                # Если файл есть, получаем публичную ссылку (публикуем, если нужно)
+                try:
+                    if not meta.is_public:
+                        disk.publish(remote_path)
+                        meta = disk.get_meta(remote_path)
+                    public_urls.append(meta.public_url)
+                    continue
+                except Exception as e:
+                    print(f"Ошибка публикации {remote_path}: {e}")
+            # Если файла нет, загружаем и публикуем
+            disk.upload(local_path, remote_path, overwrite=True)
+            disk.publish(remote_path)
+            meta = disk.get_meta(remote_path)
+            public_urls.append(meta.public_url)
+        except Exception as e:
+            print(f"Ошибка загрузки {local_path} на Яндекс.Диске: {e}")
+    return public_urls
 
 def process_images(ad_element, output_dir, ad_id, shop_image_path=None):
     """Обработка изображений для объявления"""
@@ -343,53 +317,48 @@ def process_images(ad_element, output_dir, ad_id, shop_image_path=None):
     return process_image_urls(original_urls, output_dir, ad_id, shop_image_path)
 
 def process_image_urls(original_urls, output_dir, ad_id, shop_image_path=None):
-    """Обработка URL изображений для объявления"""
+    """Обработка URL изображений для объявления и загрузка на Яндекс.Диск"""
     if not original_urls:
         return []
-
-    processed_urls = []  # Список URL обработанных изображений
-
-    # Обработка изображений
+    processed_urls = []
+    # Обрабатываем все фотографии
     for i, img_url in enumerate(original_urls):
         if not img_url:
             continue
-
-        # Определение пути сохранения
         output_filename = f"{ad_id}_{i+1}.jpg"
         output_path = os.path.join(output_dir, output_filename)
-
-        # Определяем, нужно ли использовать add_shop_image для первого изображения
-        if i == 0 and shop_image_path and os.path.exists(shop_image_path):
-            result_path = add_shop_image(img_url, shop_image_path, output_path)
-        elif i < 4:  # Накладываем водяной знак только на первые 4 изображения
-            # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
-            # Используем остаток от деления на длину списка, чтобы не выйти за границы
-            overlay_index = i % len(OVERLAY_IMAGES)
-            overlay_path = OVERLAY_IMAGES[overlay_index]
-            
-            result_path = overlay_image(img_url, overlay_path, output_path)
-        else:
-            # Для остальных изображений просто сохраняем без водяного знака
-            try:
-                response = requests.get(img_url)
-                if response.status_code == 200:
-                    with open(output_path, 'wb') as f:
-                        f.write(response.content)
-                    result_path = output_path
-                else:
-                    result_path = None
-            except Exception as e:
-                result_path = None
-        
-        if result_path:
-            # Генерируем локальный URL для изображения
-            local_url = generate_local_image_url(result_path)
-            processed_urls.append(local_url)
-            print(f"Обработано изображение: {output_filename} -> {local_url}")
-    
-    # Изображения магазина теперь добавляются в основной функции process_xml,
-    # поэтому здесь мы их не добавляем
-    
+        # Кэширование: если файл уже есть на Яндекс.Диске, используем ссылку
+        remote_folder = '/avito_images/'
+        file_name = os.path.basename(output_path)
+        remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
+        try:
+            meta = disk.get_meta(remote_path)
+            if not meta.is_public:
+                disk.publish(remote_path)
+                meta = disk.get_meta(remote_path)
+            yadisk_url = meta.public_url
+            print(f"Использована существующая ссылка на Яндекс.Диск: {yadisk_url}")
+        except Exception:
+            if i == 0 and shop_image_path and os.path.exists(shop_image_path):
+                yadisk_url = add_shop_image(img_url, shop_image_path, output_path)
+            elif i < 4:
+                overlay_index = i % len(OVERLAY_IMAGES)
+                overlay_path = OVERLAY_IMAGES[overlay_index]
+                yadisk_url = overlay_image(img_url, overlay_path, output_path)
+            else:
+                try:
+                    response = requests.get(img_url)
+                    if response.status_code == 200:
+                        with open(output_path, 'wb') as f:
+                            f.write(response.content)
+                        yadisk_url = upload_image_to_yandex_disk(output_path)
+                    else:
+                        yadisk_url = None
+                except Exception as e:
+                    yadisk_url = None
+        if yadisk_url:
+            processed_urls.append(yadisk_url)
+            print(f"Обработано изображение: {output_filename} -> {yadisk_url}")
     return processed_urls
 
 def process_images_for_original_products(ad_element, output_dir, ad_id, shop_image_path=None):
@@ -441,53 +410,64 @@ def process_images_for_original_products(ad_element, output_dir, ad_id, shop_ima
     return process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path)
 
 def process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path=None):
-    """Обработка URL изображений для оригинальных товаров с сохранением в uniqualized_images"""
+    """Обработка URL изображений для оригинальных товаров с загрузкой на Яндекс.Диск"""
     if not original_urls:
         return []
-
-    processed_urls = []  # Список URL обработанных изображений
-
-    # Обработка изображений
+    processed_urls = [] 
     for i, img_url in enumerate(original_urls):
         if not img_url:
             continue
-
-        # Определение пути сохранения в папку uniqualized_images
-        output_filename = f"{ad_id}_original_{i+1}_{uuid.uuid4().hex[:8]}.jpg"
+        output_filename = f"{ad_id}_original_{i+1}.jpg"
         output_path = os.path.join(output_dir, output_filename)
-
-        # Определяем, нужно ли использовать add_shop_image для первого изображения
+        remote_folder = '/avito_images/'
+        file_name = os.path.basename(output_path)
+        remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
+        yadisk_url = None
+        file_exists = False
+        try:
+            meta = disk.get_meta(remote_path)
+            file_exists = True
+            # Проверяем публичность через наличие поля public_url
+            if not hasattr(meta, 'public_url') or not meta.public_url:
+                disk.publish(remote_path)
+                meta = disk.get_meta(remote_path)
+            yadisk_url = getattr(meta, 'public_url', None)
+            if yadisk_url:
+                print(f"[КЭШ] Использована существующая ссылка на Яндекс.Диск: {yadisk_url}")
+            else:
+                print(f"[INFO] Файл {remote_path} найден, но не удалось получить публичную ссылку.")
+        except Exception as e:
+            # Это не ошибка, а штатная ситуация: файла нет на Яндекс.Диске, будет загружен
+            print(f"[INFO] Файл {remote_path} не найден на Яндекс.Диске — будет загружен.")
+            file_exists = False
+        if file_exists and yadisk_url:
+            processed_urls.append(yadisk_url)
+            print(f"[SKIP UPLOAD] Файл уже есть на Яндекс.Диске: {remote_path}")
+            continue
+        # Если файла нет, только тогда загружаем
         if i == 0 and shop_image_path and os.path.exists(shop_image_path):
-            result_path = add_shop_image(img_url, shop_image_path, output_path)
-        elif i < 4:  # Накладываем водяной знак только на первые 4 изображения
-            # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
-            # Используем остаток от деления на длину списка, чтобы не выйти за границы
+            yadisk_url = add_shop_image(img_url, shop_image_path, output_path)
+            print(f"[UPLOAD] Загружен коллаж с магазином: {output_filename} -> {yadisk_url}")
+        elif i < 4:
             overlay_index = i % len(OVERLAY_IMAGES)
             overlay_path = OVERLAY_IMAGES[overlay_index]
-            
-            result_path = overlay_image(img_url, overlay_path, output_path)
+            yadisk_url = overlay_image(img_url, overlay_path, output_path)
+            print(f"[UPLOAD] Загружено с наложением: {output_filename} -> {yadisk_url}")
         else:
-            # Для остальных изображений просто сохраняем без водяного знака
             try:
                 response = requests.get(img_url)
                 if response.status_code == 200:
                     with open(output_path, 'wb') as f:
                         f.write(response.content)
-                    result_path = output_path
+                    yadisk_url = upload_image_to_yandex_disk(output_path)
+                    print(f"[UPLOAD] Загружено оригинальное изображение: {output_filename} -> {yadisk_url}")
                 else:
-                    result_path = None
+                    yadisk_url = None
             except Exception as e:
-                result_path = None
-        
-        if result_path:
-            # Генерируем локальный URL для изображения
-            local_url = generate_local_image_url(result_path)
-            processed_urls.append(local_url)
-            print(f"Обработано изображение оригинального товара: {output_filename} -> {local_url}")
-    
-    # Изображения магазина теперь добавляются в основной функции process_xml,
-    # поэтому здесь мы их не добавляем
-    
+                print(f"[ERROR] Ошибка загрузки изображения {img_url}: {e}")
+                yadisk_url = None
+        if yadisk_url:
+            processed_urls.append(yadisk_url)
     return processed_urls
 
 def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
@@ -1255,10 +1235,9 @@ def process_xml(use_gdrive_for_images=True):
                         dst.write(src.read())
                     
                     # Генерируем локальный URL для изображения магазина
-                    shop_url = generate_local_image_url(shop_output_path)
-                    if shop_url:
-                        shop_image_urls.append(shop_url)
-                        print(f"Создан локальный URL для изображения магазина: {shop_url}")
+                    # Вместо локального URL теперь используем путь или публичную ссылку с Яндекс.Диска
+                    shop_image_urls.append(shop_output_path)
+                    print(f"Скопировано изображение магазина: {shop_output_path}")
                 except Exception as e:
                     pass  # Убираем детальное логирование ошибок
         
@@ -1403,6 +1382,9 @@ def process_xml(use_gdrive_for_images=True):
             if ad_id.startswith("bz"):
                 ads_to_process.append(ad)
                 total_ads += 1
+                if len(ads_to_process) >= 30:
+                    print(f"Для теста обработано только {len(ads_to_process)} объявлений (ограничение 30)")
+                    break
     
     # Обновляем поля Price и Brand для существующих записей (без детального логирования)
     price_brand_updated = False
@@ -1693,10 +1675,7 @@ def process_xml(use_gdrive_for_images=True):
                 # Создаем запрос для поиска файла
                 query = f"name='{file_name}' and trashed=false"
                 
-                # Если у нас есть GOOGLE_DRIVE_FOLDER_ID, ищем файл только в этой папке
-                if GOOGLE_DRIVE_FOLDER_ID:
-                    if check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
-                        query += f" and '{GOOGLE_DRIVE_FOLDER_ID}' in parents"
+                # Google Drive больше не используется
                 
                 # Проверка, существует ли файл с таким именем
                 response = drive_service.files().list(
@@ -1846,20 +1825,7 @@ def check_folder_access(drive_service, folder_id):
 def main():
     """Основная функция для запуска скрипта (для обратной совместимости)"""
     # Проверяем доступ к папке Google Drive, если указан ID
-    if GOOGLE_DRIVE_FOLDER_ID:
-        try:
-            # Инициализируем Google Drive API с OAuth
-            drive_service = create_drive_service()
-            if not drive_service:
-                print("Ошибка инициализации Drive сервиса")
-                return
-            
-            # Проверяем доступ к папке
-            if not check_folder_access(drive_service, GOOGLE_DRIVE_FOLDER_ID):
-                print(f"ВНИМАНИЕ: Не удалось получить доступ к папке с ID {GOOGLE_DRIVE_FOLDER_ID}")
-                print("Будет использоваться автоматическое создание папки или корневая папка")
-        except Exception as e:
-            print(f"Ошибка при проверке доступа к папке Google Drive: {e}")
+    # Google Drive больше не используется
     
     # Проверяем консистентность товаров в Excel перед началом работы
     if os.path.exists(OUTPUT_EXCEL_PATH):
@@ -2030,8 +1996,15 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             if response.status_code != 200:
                 print(f"Ошибка загрузки изображения по URL {input_image_path_or_url}, код: {response.status_code}")
                 return None
-                
-            img = PILImage.open(BytesIO(response.content))
+            content_type = response.headers.get('Content-Type', '')
+            if not content_type.startswith('image/'):
+                print(f"Ошибка: получен не-изображение по URL {input_image_path_or_url}. Content-Type: {content_type}")
+                return None
+            try:
+                img = PILImage.open(BytesIO(response.content))
+            except Exception as e:
+                print(f"Ошибка PIL при открытии изображения по URL {input_image_path_or_url}: {e}")
+                return None
         else:
             # Загрузка локального изображения
             img = PILImage.open(input_image_path_or_url)
@@ -2202,14 +2175,46 @@ def process_image_for_derived_products(original_image_url, output_dir, base_ad_i
     result_path = uniqualize_image(original_image_url, output_path, city_index)
     
     if result_path:
-        # Генерируем локальный URL для изображения
-        local_url = generate_local_image_url(result_path)
-        print(f"Уникализированное изображение {output_filename} сохранено локально: {local_url}")
-        return local_url
+        print(f"Уникализированное изображение {output_filename} сохранено: {result_path}")
+        return result_path
     else:
         print(f"Ошибка: не удалось уникализировать изображение {output_filename}")
         # В случае ошибки возвращаем исходный URL
         return original_image_url
+    
+def upload_image_to_yandex_disk(local_path, remote_folder='/avito_images/'):
+    """
+    Загружает одно изображение на Яндекс.Диск и возвращает публичную ссылку.
+    Если файл уже есть на Яндекс.Диске, используется существующая публичная ссылка.
+    """
+    file_name = os.path.basename(local_path)
+    remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
+    try:
+        # Проверяем, существует ли файл на Яндекс.Диске
+        file_exists = False
+        try:
+            meta = disk.get_meta(remote_path)
+            file_exists = True
+        except Exception:
+            file_exists = False
+        if file_exists:
+            # Если файл есть, получаем публичную ссылку (публикуем, если нужно)
+            try:
+                if not meta.is_public:
+                    disk.publish(remote_path)
+                    meta = disk.get_meta(remote_path)
+                return meta.public_url
+            except Exception as e:
+                print(f"Ошибка публикации {remote_path}: {e}")
+        # Если файла нет, загружаем и публикуем
+        disk.upload(local_path, remote_path, overwrite=True)
+        disk.publish(remote_path)
+        meta = disk.get_meta(remote_path)
+        return meta.public_url
+    except Exception as e:
+        print(f"Ошибка загрузки изображения на Яндекс.Диск: {e}")
+        return None
+
 
 def update_existing_records(existing_data, xml_root):
     """
