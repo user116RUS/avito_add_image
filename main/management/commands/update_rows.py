@@ -25,11 +25,11 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx" # Токен Яндекс.Диска из переменной окружения
-YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')
+OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx" 
+YANDEX_DISK_TOKEN = "y0__xCrwb2zBhjg9zggkqjj5xNpZfReuH1ncGXXjdTb_Z-ydk1LPw" # Токен Яндекс.Диска из переменной окружения
 disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
 MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
-YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')   # Путь к папке на Яндекс.Диске
+YANDEX_DISK_FOLDER_PATH = '/avito_excel/'   # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Конфигурация для локального хранения изображений
@@ -252,10 +252,12 @@ def upload_images_to_yandex_disk(local_paths, remote_folder="/avito_images/"):
             if file_exists:
                 # Если файл есть, получаем публичную ссылку (публикуем, если нужно)
                 try:
-                    if not meta.is_public:
+                    yadisk_url = getattr(meta, 'public_url', None)
+                    if not yadisk_url:
                         disk.publish(remote_path)
                         meta = disk.get_meta(remote_path)
-                    public_urls.append(meta.public_url)
+                        yadisk_url = getattr(meta, 'public_url', None)
+                    public_urls.append(yadisk_url)
                     continue
                 except Exception as e:
                     print(f"Ошибка публикации {remote_path}: {e}")
@@ -263,7 +265,8 @@ def upload_images_to_yandex_disk(local_paths, remote_folder="/avito_images/"):
             disk.upload(local_path, remote_path, overwrite=True)
             disk.publish(remote_path)
             meta = disk.get_meta(remote_path)
-            public_urls.append(meta.public_url)
+            yadisk_url = getattr(meta, 'public_url', None)
+            public_urls.append(yadisk_url)
         except Exception as e:
             print(f"Ошибка загрузки {local_path} на Яндекс.Диске: {e}")
     return public_urls
@@ -413,7 +416,12 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
     """Обработка URL изображений для оригинальных товаров с загрузкой на Яндекс.Диск"""
     if not original_urls:
         return []
-    processed_urls = [] 
+    processed_urls = []
+    # Получаем shop_image_urls из кэша
+    try:
+        shop_image_urls = load_shop_images_cache() or []
+    except Exception:
+        shop_image_urls = []
     for i, img_url in enumerate(original_urls):
         if not img_url:
             continue
@@ -427,7 +435,6 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
         try:
             meta = disk.get_meta(remote_path)
             file_exists = True
-            # Проверяем публичность через наличие поля public_url
             if not hasattr(meta, 'public_url') or not meta.public_url:
                 disk.publish(remote_path)
                 meta = disk.get_meta(remote_path)
@@ -437,11 +444,12 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
             else:
                 print(f"[INFO] Файл {remote_path} найден, но не удалось получить публичную ссылку.")
         except Exception as e:
-            # Это не ошибка, а штатная ситуация: файла нет на Яндекс.Диске, будет загружен
             print(f"[INFO] Файл {remote_path} не найден на Яндекс.Диске — будет загружен.")
             file_exists = False
         if file_exists and yadisk_url:
-            processed_urls.append(yadisk_url)
+            # Фильтрация: только Яндекс.Диск или shop_image_urls
+            if (str(yadisk_url).startswith('https://disk.yandex.ru') or str(yadisk_url).startswith('https://yadi.sk') or yadisk_url in shop_image_urls):
+                processed_urls.append(yadisk_url)
             print(f"[SKIP UPLOAD] Файл уже есть на Яндекс.Диске: {remote_path}")
             continue
         # Если файла нет, только тогда загружаем
@@ -467,7 +475,9 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
                 print(f"[ERROR] Ошибка загрузки изображения {img_url}: {e}")
                 yadisk_url = None
         if yadisk_url:
-            processed_urls.append(yadisk_url)
+            # Фильтрация: только Яндекс.Диск или shop_image_urls
+            if (str(yadisk_url).startswith('https://disk.yandex.ru') or str(yadisk_url).startswith('https://yadi.sk') or yadisk_url in shop_image_urls):
+                processed_urls.append(yadisk_url)
     return processed_urls
 
 def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
@@ -975,16 +985,32 @@ def duplicate_rows(data_frame):
     
     # Для каждой строки в исходном DataFrame
     for _, row in data_frame.iterrows():
-        # Добавляем исходную строку (оригинал без изменений)
+        # Оригинал: product_images -> upload на Яндекс.Диск (original), ссылки + shop_image_urls
         original_row = row.to_dict()
-        
-        # Устанавливаем значение Delivery для оригинальной строки
-        # Если это товар в Туле по адресу "Тула, улица Волнянского, 1", то ПВЗ, иначе пустое значение
         if original_row.get('Address') == 'Тула, улица Волнянского, 1':
             original_row['Delivery'] = 'ПВЗ'
         else:
             original_row['Delivery'] = ''
-        
+        # Получаем product_images
+        original_image_urls = []
+        if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
+            original_image_urls = row['ImageUrls'].split('|')
+        orig_yadisk_links = []
+        for j, img_url in enumerate(original_image_urls):
+            orig_filename = f"{original_row['Id']}_original_{j+1}.jpg"
+            orig_path = os.path.join(LOCAL_UNIQUE_IMAGES_DIR, orig_filename)
+            try:
+                response = requests.get(img_url, timeout=30)
+                if response.status_code == 200:
+                    with open(orig_path, 'wb') as f:
+                        f.write(response.content)
+                    links = upload_images_to_yandex_disk([orig_path], remote_folder='/avito_images/')
+                    if links and links[0]:
+                        orig_yadisk_links.append(links[0])
+            except Exception as e:
+                print(f"[ORIG ERROR] Не удалось скачать/залить {img_url}: {e}")
+        orig_yadisk_links.extend(shop_image_urls)
+        original_row['ImageUrls'] = "|".join(orig_yadisk_links)
         all_rows.append(original_row)
         
         # Проверяем название товара на наличие ключевых слов
@@ -1098,45 +1124,41 @@ def duplicate_rows(data_frame):
             
             # Уникализируем изображения только для дублей товаров (не для оригинальных)
             if original_image_urls:
-                # Список для новых уникализированных URL
                 unique_image_urls = []
-                
-                # Определяем, какие изображения являются изображениями магазина (последние в списке)
-                shop_images = []
-                product_images = original_image_urls.copy()
-                
-                # Ищем изображения магазина по URL
-                for url in reversed(original_image_urls):
-                    if shop_image_urls and url in shop_image_urls:
-                        shop_images.insert(0, url)  # Добавляем в начало списка
-                        product_images.remove(url)  # Удаляем из списка изображений продукта
-                    else:
-                        break  # Прекращаем поиск, если нашли изображение, которое не является изображением магазина
-                
-                print(f"Для товара {duplicate['Id']}: найдено {len(product_images)} изображений продукта и {len(shop_images)} изображений магазина")
-                
-                # Обрабатываем изображения продукта
-                # Для дублей товаров (товары с суффиксами -1, -2 и т.д.) уникализируем изображения
-                print(f"Товар {duplicate['Id']} является дублем, уникализируем изображения для города")
+                num_shop_images = len(shop_image_urls)
+                if num_shop_images > 0 and len(original_image_urls) >= num_shop_images:
+                    product_images = original_image_urls[:-num_shop_images]
+                else:
+                    product_images = original_image_urls.copy()
+                # Для каждого города делаем уникальные derived-фото (ID, город, номер)
+                print(f"Для товара {duplicate['Id']}: найдено {len(product_images)} изображений продукта и {num_shop_images} shop-изображений (будут заменены)")
                 for j, img_url in enumerate(product_images):
-                    unique_url = process_image_for_derived_products(
-                        img_url, 
-                        unique_images_dir, 
-                        original_id, 
-                        city_index + j  # Добавляем j для большей вариации
-                    )
-                    if unique_url:
-                        unique_image_urls.append(unique_url)
-                    else:
-                        # Если уникализация не удалась, используем исходный URL
+                    derived_filename = f"{original_id}_derived_{city_index+1}_{j+1}.jpg"
+                    derived_path = os.path.join(unique_images_dir, derived_filename)
+                    try:
+                        response = requests.get(img_url, timeout=30)
+                        if response.status_code == 200:
+                            with open(derived_path, 'wb') as f:
+                                f.write(response.content)
+                            links = upload_images_to_yandex_disk([derived_path], remote_folder='/avito_images/')
+                            if links and links[0]:
+                                unique_image_urls.append(links[0])
+                            else:
+                                unique_image_urls.append(img_url)
+                        else:
+                            unique_image_urls.append(img_url)
+                    except Exception as e:
+                        print(f"[DERIVED ERROR] Не удалось скачать/залить {img_url}: {e}")
                         unique_image_urls.append(img_url)
-                
-                # Добавляем изображения магазина без изменений
-                unique_image_urls.extend(shop_images)
-                
-                # Обновляем ImageUrls в дубле
+                unique_image_urls.extend(shop_image_urls)
+                if len(unique_image_urls) < 10 and shop_image_urls:
+                    missing = 10 - len(unique_image_urls)
+                    for k in range(missing):
+                        unique_image_urls.append(shop_image_urls[k % len(shop_image_urls)])
+                if len(unique_image_urls) > 10:
+                    unique_image_urls = unique_image_urls[:10]
                 duplicate['ImageUrls'] = "|".join(unique_image_urls)
-                print(f"Для товара {duplicate['Id']}: обновлены URL изображений")
+                print(f"Для товара {duplicate['Id']}: обновлены URL изображений (derived+shop, всего {len(unique_image_urls)})")
             
             # Добавляем дубль в список всех строк
             all_rows.append(duplicate)
@@ -1215,33 +1237,26 @@ def process_xml(use_gdrive_for_images=True):
     os.makedirs(original_products_dir, exist_ok=True)
     
     # Инициализация Google Drive API для изображений (только для изображений, не для Excel)
-    gdrive_service = None
-    if use_gdrive_for_images:
-        gdrive_service = create_drive_service()
+    # gdrive_service = None
+    # if use_gdrive_for_images:
+    #     gdrive_service = create_drive_service()
     
     # Сначала пробуем загрузить ссылки на изображения магазина из кэша
     shop_image_urls = load_shop_images_cache()
     
-    # Если не удалось загрузить из кэша, загружаем изображения магазина
+    # Если не удалось загрузить из кэша, загружаем shop-изображения на Яндекс.Диск и кэшируем публичные ссылки
     if shop_image_urls is None and SHOP_IMAGES:
         shop_image_urls = []
-        for i, shop_img_path in enumerate(SHOP_IMAGES):
-            if os.path.exists(shop_img_path):
-                shop_output_path = os.path.join(output_dir, f"shop_image_{i+1}.jpg")
-                
-                try:
-                    # Копируем файлы магазина
-                    with open(shop_img_path, 'rb') as src, open(shop_output_path, 'wb') as dst:
-                        dst.write(src.read())
-                    
-                    # Генерируем локальный URL для изображения магазина
-                    # Вместо локального URL теперь используем путь или публичную ссылку с Яндекс.Диска
-                    shop_image_urls.append(shop_output_path)
-                    print(f"Скопировано изображение магазина: {shop_output_path}")
-                except Exception as e:
-                    pass  # Убираем детальное логирование ошибок
-        
-        # Сохраняем ссылки в кэш для будущих запусков
+        # Загружаем shop-изображения на Яндекс.Диск и получаем публичные ссылки
+        try:
+            public_links = upload_images_to_yandex_disk(SHOP_IMAGES, remote_folder='/avito_images/')
+            for link in public_links:
+                if link:
+                    shop_image_urls.append(link)
+            print(f"Загружено shop-изображений на Яндекс.Диск: {len(shop_image_urls)}")
+        except Exception as e:
+            print(f"Ошибка загрузки shop-изображений на Яндекс.Диск: {e}")
+        # Сохраняем публичные ссылки в кэш
         if shop_image_urls:
             save_shop_images_cache(shop_image_urls)
     
@@ -1372,19 +1387,12 @@ def process_xml(use_gdrive_for_images=True):
                     # Удаляем весь текст с этого места до конца
                     description.text = description.text[:start_idx] + "</p>"
 
-    # Подсчитываем общее количество товаров для обработки
+    # ВРЕМЕННО: ограничиваем обработку только 10 объявлений для теста (берём любые первые 10)
     total_ads = 0
     ads_to_process = []
     for ad in root.findall("Ad"):
-        ad_id_elem = ad.find("Id")
-        if ad_id_elem is not None and ad_id_elem.text is not None:
-            ad_id = ad_id_elem.text
-            if ad_id.startswith("bz"):
-                ads_to_process.append(ad)
-                total_ads += 1
-                if len(ads_to_process) >= 30:
-                    print(f"Для теста обработано только {len(ads_to_process)} объявлений (ограничение 30)")
-                    break
+        ads_to_process.append(ad)
+        total_ads += 1
     
     # Обновляем поля Price и Brand для существующих записей (без детального логирования)
     price_brand_updated = False
@@ -1455,27 +1463,38 @@ def process_xml(use_gdrive_for_images=True):
                         # Добавляем столько изображений магазина, сколько поместится
                         shop_images_to_add = min(remaining_slots, len(shop_image_urls))
                         all_images.extend(shop_image_urls[:shop_images_to_add])
-                
+
+                # Фильтруем только Яндекс.Диск-ссылки и shop_image_urls
+                def is_yadisk_link(img):
+                    s = str(img)
+                    if s.startswith('https://disk.yandex.ru') or s.startswith('https://yadi.sk'):
+                        return True
+                    if img in (shop_image_urls or []):
+                        return True
+                    return False
+                all_images = [img for img in all_images if is_yadisk_link(img)]
+                # Добавляем shop_image_urls, если их нет среди all_images
+                if shop_image_urls:
+                    for shop_img in shop_image_urls:
+                        if shop_img not in all_images:
+                            all_images.append(shop_img)
+
                 # Формируем строку со всеми URL изображений, разделенными |
                 image_urls_string = "|".join(all_images)
-                
+
                 # Обновляем запись в существующем DataFrame
                 row_index = existing_products_with_missing_images[ad_id]
                 existing_data.at[row_index, 'ImageUrls'] = image_urls_string
-                
+
                 # Если есть секция Images, заменяем её в XML
                 images_element = ad.find("Images")
                 if images_element is not None:
                     # Удаляем существующие изображения
                     for img in images_element.findall("Image"):
                         images_element.remove(img)
-                        
                     # Добавляем новые изображения в XML
                     for i, img_path in enumerate(all_images):
-                        # Получаем соответствующий URL
                         img_url = img_path if isinstance(img_path, str) else img_path[0]
-                        
-                        # Создаём элемент для XML
                         img_elem = ET.SubElement(images_element, "Image")
                         img_elem.text = img_url
                         img_elem.set("url", img_url)
@@ -1555,35 +1574,37 @@ def process_xml(use_gdrive_for_images=True):
         processed_images = process_images_for_original_products(ad, original_products_dir, ad_id)
         processed_images_dict[ad_id] = processed_images
         
-        # Если есть секция Images, заменяем её в XML
-        all_images = list(processed_images)
-        
-        # Добавляем ссылки на изображения магазина, если они есть
+        # ГАРАНТИЯ: В ImageUrls только Яндекс.Диск-ссылки (disk.yandex.ru, yadi.sk) и shop_image_urls
+        def is_yadisk_link(img):
+            s = str(img)
+            if s.startswith('https://disk.yandex.ru') or s.startswith('https://yadi.sk'):
+                return True
+            if img in (shop_image_urls or []):
+                return True
+            return False
+
+        # Оставляем только Яндекс.Диск-ссылки и shop_image_urls
+        all_images = [img for img in processed_images if is_yadisk_link(img)]
+        # Добавляем shop_image_urls, если их нет среди all_images
         if shop_image_urls:
-            # Проверяем, сколько ещё можно добавить изображений (максимум 10)
-            remaining_slots = 10 - len(all_images)
-            if remaining_slots > 0:
-                # Добавляем столько изображений магазина, сколько поместится
-                shop_images_to_add = min(remaining_slots, len(shop_image_urls))
-                all_images.extend(shop_image_urls[:shop_images_to_add])
-        
+            for shop_img in shop_image_urls:
+                if shop_img not in all_images:
+                    all_images.append(shop_img)
+
+        # Если есть секция Images, заменяем её в XML
         if all_images:
             images_element = ad.find("Images")
             if images_element is not None:
                 # Удаляем существующие изображения
                 for img in images_element.findall("Image"):
                     images_element.remove(img)
-                    
                 # Добавляем новые изображения в XML
                 for i, img_path in enumerate(all_images):
-                    # Получаем соответствующий URL
                     img_url = img_path if isinstance(img_path, str) else img_path[0]
-                    
-                    # Создаём элемент для XML
                     img_elem = ET.SubElement(images_element, "Image")
                     img_elem.text = img_url
                     img_elem.set("url", img_url)
-        
+
         # Формируем строку со всеми URL изображений, разделенными |
         image_urls_string = "|".join(all_images)
         
@@ -1890,6 +1911,39 @@ def clean_orphaned_derived_products(existing_data):
     
     return existing_data, False
 
+def upload_image_to_yandex_disk(local_path, remote_folder='/avito_images/'):
+    """
+    Загружает одно изображение на Яндекс.Диск и возвращает публичную ссылку.
+    Если файл уже есть на Яндекс.Диске, используется существующая публичная ссылка.
+    """
+    file_name = os.path.basename(local_path)
+    remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
+    try:
+        # Проверяем, существует ли файл на Яндекс.Диске
+        file_exists = False
+        try:
+            meta = disk.get_meta(remote_path)
+            file_exists = True
+        except Exception:
+            file_exists = False
+        if file_exists:
+            # Если файл есть, получаем публичную ссылку (публикуем, если нужно)
+            try:
+                if not meta.is_public:
+                    disk.publish(remote_path)
+                    meta = disk.get_meta(remote_path)
+                return meta.public_url
+            except Exception as e:
+                print(f"Ошибка публикации {remote_path}: {e}")
+        # Если файла нет, загружаем и публикуем
+        disk.upload(local_path, remote_path, overwrite=True)
+        disk.publish(remote_path)
+        meta = disk.get_meta(remote_path)
+        return meta.public_url
+    except Exception as e:
+        print(f"Ошибка загрузки изображения на Яндекс.Диск: {e}")
+        return None
+    
 def check_excel_consistency(excel_file_path=OUTPUT_EXCEL_PATH):
     """
     Проверяет консистентность в Excel-файле между базовыми товарами и их дублями.
@@ -1973,247 +2027,6 @@ def check_excel_consistency(excel_file_path=OUTPUT_EXCEL_PATH):
     except Exception as e:
         print(f"Ошибка при проверке консистентности Excel-файла: {e}")
         return False
-
-def uniqualize_image(input_image_path_or_url, output_path, city_index):
-    """
-    Создает уникализированную версию изображения, изменяя метаданные и визуальные параметры
-    
-    input_image_path_or_url: путь к исходному изображению или URL
-    output_path: путь для сохранения уникализированного изображения
-    city_index: индекс города, используется для вариации параметров
-    
-    Возвращает: путь к уникализированному изображению
-    """
-    try:
-        print(f"Уникализация изображения для города с индексом {city_index}")
-        
-        # Определяем, является ли вход URL или локальным путем
-        is_url = input_image_path_or_url.startswith('http')
-        
-        if is_url:
-            # Загрузка изображения из URL
-            response = requests.get(input_image_path_or_url)
-            if response.status_code != 200:
-                print(f"Ошибка загрузки изображения по URL {input_image_path_or_url}, код: {response.status_code}")
-                return None
-            content_type = response.headers.get('Content-Type', '')
-            if not content_type.startswith('image/'):
-                print(f"Ошибка: получен не-изображение по URL {input_image_path_or_url}. Content-Type: {content_type}")
-                return None
-            try:
-                img = PILImage.open(BytesIO(response.content))
-            except Exception as e:
-                print(f"Ошибка PIL при открытии изображения по URL {input_image_path_or_url}: {e}")
-                return None
-        else:
-            # Загрузка локального изображения
-            img = PILImage.open(input_image_path_or_url)
-        
-        # Конвертируем в RGB, если это не RGB
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # 1. Изменение контраста и яркости
-        # Используем индекс города для вариации параметров
-        contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05  # Варьируется от 1.05 до 1.15
-        brightness_factor = 1.0 + (city_index % 5 - 2) * 0.02  # Варьируется от 0.96 до 1.04
-        
-        # Применяем изменения контраста
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(contrast_factor)
-        
-        # Применяем изменения яркости
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(brightness_factor)
-        
-        # 2. Добавление шума
-        # Создаем массив NumPy из изображения
-        img_array = np.array(img)
-        
-        # Генерируем шум на основе индекса города
-        noise_level = (city_index % 4 + 2) * 2  # Варьируется от 4 до 10
-        noise = np.random.normal(0, noise_level, img_array.shape)
-        
-        # Применяем шум к изображению
-        noisy_img_array = np.clip(img_array + noise, 0, 255).astype(np.uint8)
-        img = PILImage.fromarray(noisy_img_array)
-        
-        # 3. Легкое размытие (для некоторых изображений)
-        if city_index % 3 == 0:
-            blur_radius = (city_index % 2) * 0.3 + 0.1  # Варьируется от 0.1 до 0.4
-            img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-        
-        # 4. Небольшой поворот для некоторых изображений
-        if city_index % 4 == 0:
-            rotation_angle = (city_index % 3 - 1) * 0.5  # Варьируется от -0.5 до 0.5 градусов
-            img = img.rotate(rotation_angle, resample=PILImage.BICUBIC, expand=False)
-        
-        # Сохраняем измененное изображение
-        img.save(output_path, quality=95)
-        
-        # 5. Изменение метаданных (EXIF)
-        try:
-            # Создаем базовые EXIF данные
-            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}}
-            
-            # Устанавливаем дату создания (сдвигаем на 1-2 дня относительно текущей)
-            days_shift = city_index % 3 + 1  # 1, 2 или 3 дня
-            creation_date = (datetime.now() - timedelta(days=days_shift)).strftime("%Y:%m:%d %H:%M:%S")
-            exif_dict['0th'][piexif.ImageIFD.DateTime] = creation_date
-            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
-            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = creation_date
-            
-            # Варьируем имя камеры
-            camera_models = [
-                "iPhone 13", "Samsung Galaxy S21", "Google Pixel 6", 
-                "Xiaomi Mi 11", "Sony Alpha", "Canon EOS R5"
-            ]
-            camera_model = camera_models[city_index % len(camera_models)]
-            exif_dict['0th'][piexif.ImageIFD.Model] = camera_model
-            
-            # Варьируем производителя
-            manufacturers = ["Apple", "Samsung", "Google", "Xiaomi", "Sony", "Canon"]
-            manufacturer = manufacturers[city_index % len(manufacturers)]
-            exif_dict['0th'][piexif.ImageIFD.Make] = manufacturer
-            
-            # Добавляем случайные GPS координаты для некоторых изображений
-            if city_index % 3 == 0:
-                # Координаты некоторых городов России (примерные)
-                city_coords = [
-                    (55.7558, 37.6173),  # Москва
-                    (59.9343, 30.3351),  # Санкт-Петербург
-                    (56.8431, 60.6454),  # Екатеринбург
-                    (55.0415, 82.9346),  # Новосибирск
-                    (56.3287, 44.0020),  # Нижний Новгород
-                    (53.1950, 50.1982),  # Самара
-                    (51.5406, 46.0086),  # Саратов
-                    (45.0448, 38.9760)   # Краснодар
-                ]
-                
-                # Выбираем координаты и добавляем небольшое случайное смещение
-                base_lat, base_lon = city_coords[city_index % len(city_coords)]
-                lat = base_lat + (random.random() - 0.5) * 0.01  # Смещение ±0.005 градуса
-                lon = base_lon + (random.random() - 0.5) * 0.01
-                
-                def to_deg(value, loc):
-                    """Конвертирует десятичные градусы в градусы, минуты, секунды в формате рациональных чисел"""
-                    if value < 0:
-                        loc_value = -value
-                    else:
-                        loc_value = value
-                    
-                    deg = int(loc_value)
-                    d = loc_value - deg
-                    min = int(d * 60)
-                    sec = int((d - min / 60) * 3600 * 100)
-                    
-                    # Возвращаем кортежи в формате ((числитель, знаменатель), ...)
-                    return ((deg, 1), (min, 1), (sec, 100))
-                
-                try:
-                    # Добавляем GPS данные в словарь EXIF
-                    exif_dict['GPS'][piexif.GPSIFD.GPSVersionID] = (2, 2, 0, 0)
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = 'N' if lat >= 0 else 'S'
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = 'E' if lon >= 0 else 'W'
-                    
-                    # Преобразуем координаты в формат рациональных чисел
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(abs(lat), 'lat')
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(abs(lon), 'lon')
-                except Exception as e:
-                    print(f"Ошибка при добавлении GPS данных: {e}")
-                    # Удаляем GPS данные, чтобы не вызвать ошибку при сохранении
-                    exif_dict['GPS'] = {}
-            
-            # Собираем EXIF данные и добавляем их к изображению
-            try:
-                exif_bytes = piexif.dump(exif_dict)
-                piexif.insert(exif_bytes, output_path)
-                print(f"EXIF метаданные успешно изменены для изображения {output_path}")
-            except Exception as e:
-                print(f"Ошибка при сохранении EXIF данных: {e}")
-                # Если не удалось сохранить все метаданные, пробуем сохранить только основные
-                try:
-                    # Создаем более простой EXIF словарь без GPS данных
-                    simple_exif = {'0th': {}, 'Exif': {}, '1st': {}}
-                    simple_exif['0th'][piexif.ImageIFD.DateTime] = creation_date
-                    simple_exif['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
-                    
-                    exif_bytes = piexif.dump(simple_exif)
-                    piexif.insert(exif_bytes, output_path)
-                    print(f"Упрощенные EXIF метаданные сохранены для изображения {output_path}")
-                except Exception as e2:
-                    print(f"Не удалось сохранить даже упрощенные EXIF метаданные: {e2}")
-            
-        except Exception as e:
-            print(f"Ошибка при изменении EXIF метаданных: {e}")
-            # Продолжаем выполнение, так как изображение уже было сохранено с визуальными изменениями
-        
-        return output_path
-        
-    except Exception as e:
-        print(f"Ошибка при уникализации изображения: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def process_image_for_derived_products(original_image_url, output_dir, base_ad_id, city_index):
-    """
-    Обрабатывает изображение для производных товаров с уникализацией
-    
-    original_image_url: URL исходного изображения
-    output_dir: директория для сохранения обработанных изображений
-    base_ad_id: базовый ID товара
-    city_index: индекс города (для вариации параметров уникализации)
-    
-    Возвращает: URL уникализированного изображения (локальный URL)
-    """
-    # Формируем уникальное имя файла
-    output_filename = f"{base_ad_id}_derived_{city_index}_{uuid.uuid4().hex[:8]}.jpg"
-    output_path = os.path.join(output_dir, output_filename)
-    
-    # Уникализируем изображение
-    result_path = uniqualize_image(original_image_url, output_path, city_index)
-    
-    if result_path:
-        print(f"Уникализированное изображение {output_filename} сохранено: {result_path}")
-        return result_path
-    else:
-        print(f"Ошибка: не удалось уникализировать изображение {output_filename}")
-        # В случае ошибки возвращаем исходный URL
-        return original_image_url
-    
-def upload_image_to_yandex_disk(local_path, remote_folder='/avito_images/'):
-    """
-    Загружает одно изображение на Яндекс.Диск и возвращает публичную ссылку.
-    Если файл уже есть на Яндекс.Диске, используется существующая публичная ссылка.
-    """
-    file_name = os.path.basename(local_path)
-    remote_path = f"{remote_folder.rstrip('/')}/{file_name}"
-    try:
-        # Проверяем, существует ли файл на Яндекс.Диске
-        file_exists = False
-        try:
-            meta = disk.get_meta(remote_path)
-            file_exists = True
-        except Exception:
-            file_exists = False
-        if file_exists:
-            # Если файл есть, получаем публичную ссылку (публикуем, если нужно)
-            try:
-                if not meta.is_public:
-                    disk.publish(remote_path)
-                    meta = disk.get_meta(remote_path)
-                return meta.public_url
-            except Exception as e:
-                print(f"Ошибка публикации {remote_path}: {e}")
-        # Если файла нет, загружаем и публикуем
-        disk.upload(local_path, remote_path, overwrite=True)
-        disk.publish(remote_path)
-        meta = disk.get_meta(remote_path)
-        return meta.public_url
-    except Exception as e:
-        print(f"Ошибка загрузки изображения на Яндекс.Диск: {e}")
-        return None
 
 
 def update_existing_records(existing_data, xml_root):
@@ -2418,6 +2231,132 @@ def get_service_account_email():
     Заглушка для совместимости - Google Drive больше не используется
     """
     return 'не используется'
+
+def uniqualize_image(input_image_path_or_url, output_path, city_index):
+    """
+    Создает уникализированную версию изображения, изменяя метаданные и визуальные параметры
+    
+    input_image_path_or_url: путь к исходному изображению или URL
+    output_path: путь для сохранения уникализированного изображения
+    city_index: индекс города, используется для вариации параметров
+    
+    Возвращает: путь к уникализированному изображению
+    """
+    import os
+    try:
+        is_url = input_image_path_or_url.startswith('http')
+        if is_url:
+            response = requests.get(input_image_path_or_url)
+            if response.status_code != 200:
+                return None
+            img = PILImage.open(BytesIO(response.content))
+        else:
+            img = PILImage.open(input_image_path_or_url)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05
+        brightness_factor = 1.0 + (city_index % 5 - 2) * 0.02
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(contrast_factor)
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(brightness_factor)
+        img_array = np.array(img)
+        noise_level = (city_index % 4 + 2) * 2
+        noise = np.random.normal(0, noise_level, img_array.shape)
+        noisy_img_array = np.clip(img_array + noise, 0, 255).astype(np.uint8)
+        img = PILImage.fromarray(noisy_img_array)
+        if city_index % 3 == 0:
+            blur_radius = (city_index % 2) * 0.3 + 0.1
+            img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        if city_index % 4 == 0:
+            rotation_angle = (city_index % 3 - 1) * 0.5
+            img = img.rotate(rotation_angle, resample=PILImage.BICUBIC, expand=False)
+        # Сохраняем только как JPEG
+        img.save(output_path, format='JPEG', quality=95)
+        # Проверка валидности после сохранения
+        try:
+            with PILImage.open(output_path) as test_img:
+                test_img.verify()
+        except Exception as e:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+        # Вставляем EXIF только если файл валидный
+        try:
+            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}}
+            days_shift = city_index % 3 + 1
+            creation_date = (datetime.now() - timedelta(days=days_shift)).strftime("%Y:%m:%d %H:%M:%S")
+            exif_dict['0th'][piexif.ImageIFD.DateTime] = creation_date
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = creation_date
+            camera_models = [
+                "iPhone 13", "Samsung Galaxy S21", "Google Pixel 6",
+                "Xiaomi Mi 11", "Sony Alpha", "Canon EOS R5"
+            ]
+            camera_model = camera_models[city_index % len(camera_models)]
+            exif_dict['0th'][piexif.ImageIFD.Model] = camera_model
+            manufacturers = ["Apple", "Samsung", "Google", "Xiaomi", "Sony", "Canon"]
+            manufacturer = manufacturers[city_index % len(manufacturers)]
+            exif_dict['0th'][piexif.ImageIFD.Make] = manufacturer
+            if city_index % 3 == 0:
+                city_coords = [
+                    (55.7558, 37.6173),
+                    (59.9343, 30.3351),
+                    (56.8431, 60.6454),
+                    (55.0415, 82.9346),
+                    (56.3287, 44.0020),
+                    (53.1950, 50.1982),
+                    (51.5406, 46.0086),
+                    (45.0448, 38.9760)
+                ]
+                base_lat, base_lon = city_coords[city_index % len(city_coords)]
+                lat = base_lat + (random.random() - 0.5) * 0.01
+                lon = base_lon + (random.random() - 0.5) * 0.01
+                def to_deg(value, loc):
+                    if value < 0:
+                        loc_value = -value
+                    else:
+                        loc_value = value
+                    deg = int(loc_value)
+                    d = loc_value - deg
+                    min = int(d * 60)
+                    sec = int((d - min / 60) * 3600 * 100)
+                    return ((deg, 1), (min, 1), (sec, 100))
+                try:
+                    exif_dict['GPS'][piexif.GPSIFD.GPSVersionID] = (2, 2, 0, 0)
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = 'N' if lat >= 0 else 'S'
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = 'E' if lon >= 0 else 'W'
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(abs(lat), 'lat')
+                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(abs(lon), 'lon')
+                except Exception as e:
+                    exif_dict['GPS'] = {}
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                piexif.insert(exif_bytes, output_path)
+            except Exception as e:
+                try:
+                    simple_exif = {'0th': {}, 'Exif': {}, '1st': {}}
+                    simple_exif['0th'][piexif.ImageIFD.DateTime] = creation_date
+                    simple_exif['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
+                    exif_bytes = piexif.dump(simple_exif)
+                    piexif.insert(exif_bytes, output_path)
+                except Exception as e2:
+                    pass
+        except Exception as e:
+            pass
+        # Проверка валидности после вставки EXIF
+        try:
+            with PILImage.open(output_path) as test_img:
+                test_img.verify()
+        except Exception as e:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+        return output_path
+    except Exception as e:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return None
 
 # Django Management Command
 from django.core.management.base import BaseCommand
