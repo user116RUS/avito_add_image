@@ -26,10 +26,10 @@ import shutil
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx" 
-YANDEX_DISK_TOKEN = "y0__xCrwb2zBhjg9zggkqjj5xNpZfReuH1ncGXXjdTb_Z-ydk1LPw" # Токен Яндекс.Диска из переменной окружения
+YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN') # Токен Яндекс.Диска из переменной окружения
 disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
 MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
-YANDEX_DISK_FOLDER_PATH = '/avito_excel/'   # Путь к папке на Яндекс.Диске
+YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Конфигурация для локального хранения изображений
