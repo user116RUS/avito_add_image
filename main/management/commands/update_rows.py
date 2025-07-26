@@ -768,6 +768,22 @@ def upload_to_yandex_disk(file_path, force_update=True):
         file_name = os.path.basename(file_path)
         remote_path = f"{YANDEX_DISK_FOLDER_PATH.rstrip('/')}/{file_name}"
         
+        # Создаем папку если она не существует
+        try:
+            disk.get_meta(YANDEX_DISK_FOLDER_PATH.rstrip('/'))
+            print(f"✅ Папка {YANDEX_DISK_FOLDER_PATH.rstrip('/')} существует")
+        except yadisk.exceptions.NotFoundError:
+            print(f"📁 Создаем папку {YANDEX_DISK_FOLDER_PATH.rstrip('/')}")
+            try:
+                disk.mkdir(YANDEX_DISK_FOLDER_PATH.rstrip('/'))
+                print(f"✅ Папка создана успешно")
+            except Exception as mkdir_error:
+                print(f"❌ Ошибка создания папки: {mkdir_error}")
+                return None
+        except Exception as folder_error:
+            print(f"❌ Ошибка проверки папки: {folder_error}")
+            return None
+        
         # Проверяем, существует ли файл на Яндекс.Диске
         file_exists = False
         try:
