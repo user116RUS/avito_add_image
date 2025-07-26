@@ -855,6 +855,63 @@ def upload_image_to_yandex_disk(local_image_path, remote_filename):
             print(f"❌ Файл пустой (0 байт): {local_image_path}")
             return None
         
+        # Более тщательная проверка целостности изображения перед загрузкой
+        try:
+            print(f"🔍 Выполняем тщательную проверку целостности файла...")
+            
+            # Проверка 1: Базовая проверка PIL
+            with PILImage.open(local_image_path) as test_img:
+                # Получаем размер и режим
+                width, height = test_img.size
+                mode = test_img.mode
+                print(f"📐 Размер изображения: {width}x{height}, режим: {mode}")
+                
+                # Проверяем, что размер разумный
+                if width <= 0 or height <= 0:
+                    print(f"❌ Недопустимый размер изображения: {width}x{height}")
+                    return None
+                    
+                # Базовая проверка целостности
+                test_img.verify()
+                print(f"✅ Базовая проверка PIL пройдена")
+            
+            # Проверка 2: Попытка загрузить и сохранить изображение (более глубокая проверка)
+            try:
+                with PILImage.open(local_image_path) as verify_img:
+                    # Конвертируем в RGB если нужно
+                    if verify_img.mode != 'RGB':
+                        verify_img = verify_img.convert('RGB')
+                    
+                    # Попытка получить пиксели (проверка на повреждение данных)
+                    verify_img.load()
+                    
+                    # Создаем временный файл для проверки возможности пересохранения
+                    temp_verify_path = local_image_path + '.verify_temp'
+                    verify_img.save(temp_verify_path, format='JPEG', quality=95)
+                    
+                    # Проверяем, что временный файл создался и не пустой
+                    if os.path.exists(temp_verify_path):
+                        temp_size = os.path.getsize(temp_verify_path)
+                        if temp_size > 0:
+                            print(f"✅ Глубокая проверка целостности пройдена (временный файл: {temp_size} байт)")
+                            os.remove(temp_verify_path)  # Удаляем временный файл
+                        else:
+                            print(f"❌ Временный файл пустой при проверке целостности")
+                            if os.path.exists(temp_verify_path):
+                                os.remove(temp_verify_path)
+                            return None
+                    else:
+                        print(f"❌ Не удалось создать временный файл для проверки")
+                        return None
+                        
+            except Exception as deep_check_error:
+                print(f"❌ Глубокая проверка целостности не пройдена: {deep_check_error}")
+                return None
+                
+        except Exception as integrity_error:
+            print(f"❌ Файл поврежден и не может быть загружен: {integrity_error}")
+            return None
+        
         print(f"📤 Загружаем файл {remote_filename} (размер: {file_size} байт)")
             
         # Создаем клиент Яндекс.Диска
@@ -900,24 +957,79 @@ def upload_image_to_yandex_disk(local_image_path, remote_filename):
             print(f"❌ Тип ошибки: {type(upload_error).__name__}")
             return None
         
+        # Даем Яндекс.Диску время на обработку файла
+        print(f"⏳ Ждем 2 секунды для обработки файла на Яндекс.Диске...")
+        import time
+        time.sleep(2)
+        
         # Получаем метаданные и делаем файл публичным
         try:
             print(f"📋 Получаем метаданные файла...")
-            meta = disk.get_meta(remote_path)
+            
+            # Сначала проверяем, что файл действительно загружен
+            try:
+                meta = disk.get_meta(remote_path)
+                print(f"📊 Файл на диске: размер {meta.size} байт, тип {meta.media_type}")
+                
+                # Проверяем, что размер файла на диске соответствует локальному
+                if meta.size != file_size:
+                    print(f"⚠️ Внимание: размер файла на диске ({meta.size}) отличается от локального ({file_size})")
+                    
+            except Exception as meta_check_error:
+                print(f"❌ Ошибка при проверке метаданных загруженного файла: {meta_check_error}")
+                return None
             
             # Делаем файл публичным если он еще не публичный
             if not meta.public_url:
                 print(f"🔓 Делаем файл публичным...")
-                disk.publish(remote_path)
-                # Получаем обновленные метаданные
-                meta = disk.get_meta(remote_path)
+                try:
+                    disk.publish(remote_path)
+                    print(f"✅ Файл успешно опубликован")
+                    
+                    # Небольшая задержка для обновления метаданных
+                    time.sleep(1)
+                    
+                    # Получаем обновленные метаданные
+                    meta = disk.get_meta(remote_path)
+                    
+                except Exception as publish_error:
+                    print(f"❌ Ошибка при публикации файла: {publish_error}")
+                    print(f"❌ Тип ошибки публикации: {type(publish_error).__name__}")
+                    return None
+            else:
+                print(f"✅ Файл уже является публичным")
             
             if meta.public_url:
                 print(f"✅ Публичная ссылка получена: {meta.public_url}")
                 return meta.public_url
             else:
                 print(f"❌ Не удалось получить публичную ссылку")
-                return None
+                print(f"🔍 Дополнительная информация о файле:")
+                print(f"   - Размер: {meta.size} байт")
+                print(f"   - Тип: {meta.media_type}")
+                print(f"   - Путь: {meta.path}")
+                print(f"   - Публичный: {meta.public_url is not None}")
+                print(f"   - Публичный ключ: {getattr(meta, 'public_key', 'Не указан')}")
+                
+                # Попытка повторной публикации
+                try:
+                    print(f"🔄 Попытка повторной публикации...")
+                    disk.unpublish(remote_path)  # Сначала отменяем публикацию
+                    time.sleep(1)
+                    disk.publish(remote_path)    # Затем публикуем заново
+                    time.sleep(1)
+                    meta = disk.get_meta(remote_path)
+                    
+                    if meta.public_url:
+                        print(f"✅ Публичная ссылка получена после повторной попытки: {meta.public_url}")
+                        return meta.public_url
+                    else:
+                        print(f"❌ Повторная попытка получения публичной ссылки не удалась")
+                        return None
+                        
+                except Exception as retry_error:
+                    print(f"❌ Ошибка при повторной попытке публикации: {retry_error}")
+                    return None
                 
         except Exception as meta_error:
             print(f"❌ Ошибка получения метаданных или публикации: {meta_error}")
@@ -2321,10 +2433,10 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             print(f"🔄 Конвертируем из {img.mode} в RGB")
             img = img.convert('RGB')
         
-        # 1. Изменение контраста и яркости
+        # 1. Изменение контраста и яркости (безопасные операции)
         # Используем индекс города для вариации параметров
-        contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05  # Варьируется от 1.05 до 1.15
-        brightness_factor = 1.0 + (city_index % 5 - 2) * 0.02  # Варьируется от 0.96 до 1.04
+        contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05  # Увеличиваем: от 1.05 до 1.15
+        brightness_factor = 1.0 + (city_index % 5 - 2) * 0.03  # Увеличиваем: от 0.94 до 1.06
         
         print(f"🎨 Применяем контраст: {contrast_factor:.3f}, яркость: {brightness_factor:.3f}")
         
@@ -2332,34 +2444,129 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
         enhancer = ImageEnhance.Contrast(img)
         img = enhancer.enhance(contrast_factor)
         
+        # Проверка после изменения контраста
+        try:
+            img.load()  # Убеждаемся, что изображение доступно
+            print(f"✅ Контраст применен успешно")
+        except Exception as contrast_error:
+            print(f"❌ Ошибка после применения контраста: {contrast_error}")
+            return None
+        
         # Применяем изменения яркости
         enhancer = ImageEnhance.Brightness(img)
         img = enhancer.enhance(brightness_factor)
         
-        # 2. Добавление шума
-        # Создаем массив NumPy из изображения
-        print(f"🔊 Добавляем шум...")
-        img_array = np.array(img)
+        # Проверка после изменения яркости
+        try:
+            img.load()  # Убеждаемся, что изображение доступно
+            print(f"✅ Яркость применена успешно")
+        except Exception as brightness_error:
+            print(f"❌ Ошибка после применения яркости: {brightness_error}")
+            return None
         
-        # Генерируем шум на основе индекса города
-        noise_level = (city_index % 4 + 2) * 2  # Варьируется от 4 до 10
-        noise = np.random.normal(0, noise_level, img_array.shape)
-        
-        # Применяем шум к изображению
-        noisy_img_array = np.clip(img_array + noise, 0, 255).astype(np.uint8)
-        img = PILImage.fromarray(noisy_img_array)
-        
-        # 3. Легкое размытие (для некоторых изображений)
-        if city_index % 3 == 0:
-            blur_radius = (city_index % 2) * 0.3 + 0.1  # Варьируется от 0.1 до 0.4
+        # 2. Легкое размытие (чаще применяем и с большим радиусом)
+        if city_index % 3 == 0:  # Чаще применяем размытие
+            blur_radius = (city_index % 3) * 0.2 + 0.1  # Увеличиваем радиус: от 0.1 до 0.5
             print(f"🌫️ Применяем размытие с радиусом: {blur_radius}")
-            img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            try:
+                img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+                img.load()  # Проверяем доступность после размытия
+                print(f"✅ Размытие применено успешно")
+            except Exception as blur_error:
+                print(f"❌ Ошибка при применении размытия: {blur_error}")
+                return None
         
-        # 4. Небольшой поворот для некоторых изображений
+        # 3. Изменение насыщенности (более заметное)
+        if city_index % 2 == 0:  # Чаще применяем
+            saturation_factor = 1.0 + (city_index % 3 - 1) * 0.08  # Увеличиваем: от 0.84 до 1.16
+            print(f"🌈 Применяем насыщенность: {saturation_factor:.3f}")
+            try:
+                enhancer = ImageEnhance.Color(img)
+                img = enhancer.enhance(saturation_factor)
+                img.load()  # Проверяем доступность после насыщенности
+                print(f"✅ Насыщенность применена успешно")
+            except Exception as saturation_error:
+                print(f"❌ Ошибка при применении насыщенности: {saturation_error}")
+                return None
+        
+        # 4. Добавляем легкое изменение резкости для некоторых изображений
         if city_index % 4 == 0:
-            rotation_angle = (city_index % 3 - 1) * 0.5  # Варьируется от -0.5 до 0.5 градусов
-            print(f"🔄 Поворачиваем на угол: {rotation_angle} градусов")
-            img = img.rotate(rotation_angle, resample=PILImage.BICUBIC, expand=False)
+            sharpness_factor = 1.0 + (city_index % 2 - 0.5) * 0.3  # От 0.85 до 1.15
+            print(f"🔪 Применяем резкость: {sharpness_factor:.3f}")
+            try:
+                enhancer = ImageEnhance.Sharpness(img)
+                img = enhancer.enhance(sharpness_factor)
+                img.load()  # Проверяем доступность после резкости
+                print(f"✅ Резкость применена успешно")
+            except Exception as sharpness_error:
+                print(f"❌ Ошибка при применении резкости: {sharpness_error}")
+                return None
+        
+        # 5. Небольшая обрезка для дополнительной уникализации
+        if city_index % 6 == 0:  # Применяем к части изображений
+            width, height = img.size
+            
+            # Очень небольшая обрезка (1-3 пикселя с каждой стороны)
+            crop_pixels = (city_index % 3) + 1  # 1, 2 или 3 пикселя
+            
+            left = crop_pixels
+            top = crop_pixels  
+            right = width - crop_pixels
+            bottom = height - crop_pixels
+            
+            # Убеждаемся, что размеры остаются разумными
+            if right > left + 50 and bottom > top + 50:  # Минимум 50 пикселей
+                print(f"✂️ Обрезаем изображение на {crop_pixels} пикселей с каждой стороны")
+                try:
+                    img = img.crop((left, top, right, bottom))
+                    img.load()  # Проверяем доступность после обрезки
+                    print(f"✅ Обрезка применена успешно, новый размер: {img.size}")
+                except Exception as crop_error:
+                    print(f"❌ Ошибка при обрезке изображения: {crop_error}")
+                    return None
+        
+        # 6. Добавление зернистости (шума) - безопасный способ
+        if city_index % 4 != 0:  # Применяем к большинству изображений
+            try:
+                print(f"🌾 Добавляем зернистость...")
+                
+                # Конвертируем в numpy для добавления шума
+                img_array = np.array(img)
+                
+                # Создаем слабый шум (очень небольшой)
+                noise_intensity = 2 + (city_index % 3)  # 2, 3 или 4
+                noise = np.random.normal(0, noise_intensity, img_array.shape).astype(np.int16)
+                
+                # Добавляем шум к изображению с ограничениями
+                noisy_array = img_array.astype(np.int16) + noise
+                noisy_array = np.clip(noisy_array, 0, 255).astype(np.uint8)
+                
+                # Конвертируем обратно в PIL - исправляем синтаксис
+                img = PILImage.fromarray(noisy_array)
+                img.load()  # Проверяем доступность
+                
+                print(f"✅ Зернистость добавлена (интенсивность: {noise_intensity})")
+                
+            except Exception as noise_error:
+                print(f"⚠️ Ошибка при добавлении зернистости: {noise_error}")
+                print("📝 Продолжаем без зернистости...")
+        
+        # 7. Небольшой поворот изображения
+        if city_index % 3 == 0:  # Применяем к части изображений
+            try:
+                rotation_angle = ((city_index % 7) - 3) * 0.05  # От -0.15 до +0.15 градусов (очень малые углы)
+                if abs(rotation_angle) > 0.02:  # Поворачиваем только если угол значимый
+                    print(f"🔄 Поворачиваем изображение на {rotation_angle:.2f} градусов...")
+                    
+                    # Поворачиваем с белым фоном и высоким качеством - исправляем синтаксис
+                    img = img.rotate(rotation_angle, expand=False, fillcolor='white', resample=PILImage.Resampling.BICUBIC)
+                    img.load()  # Проверяем доступность
+                    
+                    print(f"✅ Поворот применен успешно")
+                    
+            except Exception as rotation_error:
+                print(f"⚠️ Ошибка при повороте: {rotation_error}")
+                print("📝 Продолжаем без поворота...")
         
         # Создаем выходную директорию если её нет
         output_dir = os.path.dirname(output_path)
@@ -2367,9 +2574,25 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             print(f"📁 Создаем выходную директорию: {output_dir}")
             os.makedirs(output_dir, exist_ok=True)
         
-        # Сохраняем измененное изображение
+        # Сохраняем измененное изображение с безопасными параметрами
         print(f"💾 Сохраняем уникализированное изображение...")
-        img.save(output_path, quality=95)
+        try:
+            # Используем консервативные настройки для предотвращения повреждения
+            img.save(output_path, 
+                    format='JPEG', 
+                    quality=92,  # Слегка снизили качество для совместимости
+                    optimize=False,  # Отключили оптимизацию
+                    progressive=False)  # Отключили прогрессивный режим
+            print(f"✅ Изображение сохранено в формате JPEG")
+        except Exception as save_error:
+            print(f"❌ Ошибка при сохранении изображения: {save_error}")
+            try:
+                # Попробуем сохранить с минимальными параметрами
+                img.save(output_path, format='JPEG', quality=90)
+                print(f"✅ Изображение сохранено в базовом режиме JPEG")
+            except Exception as basic_save_error:
+                print(f"❌ Критическая ошибка сохранения: {basic_save_error}")
+                return None
         
         # Проверяем, что файл действительно сохранен
         if not os.path.exists(output_path):
@@ -2383,107 +2606,130 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             print(f"❌ Сохраненный файл пустой")
             return None
         
-        # 5. Изменение метаданных (EXIF)
+        # Проверка целостности файла
         try:
-            print(f"📋 Изменяем EXIF метаданные...")
-            # Создаем базовые EXIF данные
-            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}}
+            # Пытаемся открыть сохраненный файл для проверки целостности
+            test_img = PILImage.open(output_path)
+            test_img.verify()  # Проверяем целостность изображения
+            print(f"✅ Проверка целостности изображения пройдена")
+        except Exception as verify_error:
+            print(f"❌ Ошибка целостности сохраненного изображения: {verify_error}")
+            return None
+        
+        # 4. Простое изменение EXIF метаданных (только базовые, безопасные)
+        try:
+            print(f"📋 Добавляем базовые EXIF метаданные...")
             
-            # Устанавливаем дату создания (сдвигаем на 1-2 дня относительно текущей)
-            days_shift = city_index % 3 + 1  # 1, 2 или 3 дня
+            # Создаем простые EXIF данные с GPS координатами
+            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}}
+            
+            # Устанавливаем только дату создания
+            days_shift = city_index % 7 + 1  # 1-7 дней назад
             creation_date = (datetime.now() - timedelta(days=days_shift)).strftime("%Y:%m:%d %H:%M:%S")
             exif_dict['0th'][piexif.ImageIFD.DateTime] = creation_date
             exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
-            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = creation_date
             
-            # Варьируем имя камеры
-            camera_models = [
-                "iPhone 13", "Samsung Galaxy S21", "Google Pixel 6", 
-                "Xiaomi Mi 11", "Sony Alpha", "Canon EOS R5"
+            # Добавляем GPS координаты разных городов России
+            city_coords = [
+                (55.7558, 37.6173),  # Москва
+                (59.9343, 30.3351),  # Санкт-Петербург  
+                (56.8431, 60.6454),  # Екатеринбург
+                (55.0415, 82.9346),  # Новосибирск
+                (56.3287, 44.0020),  # Нижний Новгород
+                (53.1950, 50.1982),  # Самара
+                (51.5406, 46.0086),  # Саратов
+                (45.0448, 38.9760),  # Краснодар
+                (54.7298, 55.9400),  # Уфа
+                (53.2001, 50.1500),  # Тольятти
             ]
-            camera_model = camera_models[city_index % len(camera_models)]
-            exif_dict['0th'][piexif.ImageIFD.Model] = camera_model
             
-            # Варьируем производителя
-            manufacturers = ["Apple", "Samsung", "Google", "Xiaomi", "Sony", "Canon"]
-            manufacturer = manufacturers[city_index % len(manufacturers)]
-            exif_dict['0th'][piexif.ImageIFD.Make] = manufacturer
+            # Выбираем координаты для города и добавляем небольшое случайное смещение
+            base_lat, base_lon = city_coords[city_index % len(city_coords)]
+            lat = base_lat + (random.random() - 0.5) * 0.02  # Смещение ±0.01 градуса
+            lon = base_lon + (random.random() - 0.5) * 0.02
             
-            print(f"📱 Камера: {manufacturer} {camera_model}, дата: {creation_date}")
+            def to_deg(value):
+                """Конвертирует десятичные градусы в формат рациональных чисел для EXIF"""
+                abs_value = abs(value)
+                deg = int(abs_value)
+                min_val = int((abs_value - deg) * 60)
+                sec = int(((abs_value - deg) * 60 - min_val) * 60 * 100)
+                return [(deg, 1), (min_val, 1), (sec, 100)]
             
-            # Добавляем случайные GPS координаты для некоторых изображений
-            if city_index % 3 == 0:
-                print(f"🗺️ Добавляем GPS координаты...")
-                # Координаты некоторых городов России (примерные)
-                city_coords = [
-                    (55.7558, 37.6173),  # Москва
-                    (59.9343, 30.3351),  # Санкт-Петербург
-                    (56.8431, 60.6454),  # Екатеринбург
-                    (55.0415, 82.9346),  # Новосибирск
-                    (56.3287, 44.0020),  # Нижний Новгород
-                    (53.1950, 50.1982),  # Самара
-                    (51.5406, 46.0086),  # Саратов
-                    (45.0448, 38.9760)   # Краснодар
-                ]
+            # Добавляем GPS данные
+            try:
+                exif_dict['GPS'][piexif.GPSIFD.GPSVersionID] = (2, 2, 0, 0)
+                exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = b'N' if lat >= 0 else b'S'
+                exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = b'E' if lon >= 0 else b'W'
+                exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(lat)
+                exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(lon)
                 
-                # Выбираем координаты и добавляем небольшое случайное смещение
-                base_lat, base_lon = city_coords[city_index % len(city_coords)]
-                lat = base_lat + (random.random() - 0.5) * 0.01  # Смещение ±0.005 градуса
-                lon = base_lon + (random.random() - 0.5) * 0.01
+                print(f"📍 GPS координаты: {lat:.4f}, {lon:.4f}")
+                print(f"📅 Дата создания: {creation_date}")
                 
-                def to_deg(value, loc):
-                    """Конвертирует десятичные градусы в градусы, минуты, секунды в формате рациональных чисел"""
-                    if value < 0:
-                        loc_value = -value
-                    else:
-                        loc_value = value
-                    
-                    deg = int(loc_value)
-                    d = loc_value - deg
-                    min = int(d * 60)
-                    sec = int((d - min / 60) * 3600 * 100)
-                    
-                    # Возвращаем кортежи в формате ((числитель, знаменатель), ...)
-                    return ((deg, 1), (min, 1), (sec, 100))
-                
-                try:
-                    # Добавляем GPS данные в словарь EXIF
-                    exif_dict['GPS'][piexif.GPSIFD.GPSVersionID] = (2, 2, 0, 0)
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = 'N' if lat >= 0 else 'S'
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = 'E' if lon >= 0 else 'W'
-                    
-                    # Преобразуем координаты в формат рациональных чисел
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(abs(lat), 'lat')
-                    exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(abs(lon), 'lon')
-                    print(f"📍 GPS: {lat:.4f}, {lon:.4f}")
-                except Exception as e:
-                    print(f"⚠️ Ошибка при добавлении GPS данных: {e}")
-                    # Удаляем GPS данные, чтобы не вызвать ошибку при сохранении
-                    exif_dict['GPS'] = {}
+            except Exception as gps_error:
+                print(f"⚠️ Ошибка при добавлении GPS данных: {gps_error}")
+                # Продолжаем без GPS данных
+                exif_dict['GPS'] = {}
             
             # Собираем EXIF данные и добавляем их к изображению
             try:
                 exif_bytes = piexif.dump(exif_dict)
-                piexif.insert(exif_bytes, output_path)
-                print(f"✅ EXIF метаданные успешно изменены для изображения {output_path}")
-            except Exception as e:
-                print(f"⚠️ Ошибка при сохранении EXIF данных: {e}")
-                # Если не удалось сохранить все метаданные, пробуем сохранить только основные
+                
+                # Создаем резервную копию файла перед изменением EXIF
+                backup_path = output_path + '.backup'
+                shutil.copy2(output_path, backup_path)
+                
                 try:
-                    # Создаем более простой EXIF словарь без GPS данных
-                    simple_exif = {'0th': {}, 'Exif': {}, '1st': {}}
-                    simple_exif['0th'][piexif.ImageIFD.DateTime] = creation_date
-                    simple_exif['Exif'][piexif.ExifIFD.DateTimeOriginal] = creation_date
-                    
-                    exif_bytes = piexif.dump(simple_exif)
                     piexif.insert(exif_bytes, output_path)
-                    print(f"✅ Упрощенные EXIF метаданные сохранены для изображения {output_path}")
-                except Exception as e2:
-                    print(f"⚠️ Не удалось сохранить даже упрощенные EXIF метаданные: {e2}")
+                    print(f"✅ EXIF метаданные успешно добавлены")
+                    
+                    # Проверяем целостность файла после изменения EXIF
+                    try:
+                        test_img_exif = PILImage.open(output_path)
+                        test_img_exif.verify()
+                        print(f"✅ Проверка целостности после EXIF пройдена")
+                        # Удаляем резервную копию при успехе
+                        os.remove(backup_path)
+                    except Exception as verify_exif_error:
+                        print(f"❌ Файл поврежден после изменения EXIF: {verify_exif_error}")
+                        # Восстанавливаем из резервной копии
+                        shutil.move(backup_path, output_path)
+                        print(f"✅ Файл восстановлен из резервной копии")
+                        
+                except Exception as insert_error:
+                    print(f"❌ Ошибка при вставке EXIF данных: {insert_error}")
+                    # Восстанавливаем из резервной копии
+                    if os.path.exists(backup_path):
+                        shutil.move(backup_path, output_path)
+                        print(f"✅ Файл восстановлен из резервной копии")
+                        
+            except Exception as dump_error:
+                print(f"⚠️ Ошибка при создании EXIF данных: {dump_error}")
+                # Продолжаем без EXIF метаданных
             
         except Exception as e:
             print(f"⚠️ Ошибка при изменении EXIF метаданных: {e}")
             # Продолжаем выполнение, так как изображение уже было сохранено с визуальными изменениями
+        
+        # Финальная проверка целостности файла перед возвратом
+        try:
+            print(f"🔍 Финальная проверка целостности файла...")
+            final_test_img = PILImage.open(output_path)
+            final_test_img.verify()
+            print(f"✅ Финальная проверка целостности пройдена")
+            
+            # Проверяем размер файла еще раз
+            final_size = os.path.getsize(output_path)
+            print(f"📊 Финальный размер файла: {final_size} байт")
+            
+            if final_size == 0:
+                print(f"❌ Финальный файл пустой")
+                return None
+                
+        except Exception as final_verify_error:
+            print(f"❌ Финальная проверка целостности не пройдена: {final_verify_error}")
+            return None
         
         print(f"✅ Уникализация завершена успешно: {output_path}")
         return output_path
