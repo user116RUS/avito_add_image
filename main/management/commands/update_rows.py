@@ -25,10 +25,11 @@ import shutil
 # Конфигурация
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
-OUTPUT_EXCEL_PATH = "few_cities_ya_prod.xlsx"
+OUTPUT_EXCEL_PATH = os.environ.get('OUTPUT_EXCEL_PATH', "few_cities_ya_prod.xlsx")
 YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
-MAX_ITEMS = 99999999999999 # Убираем ограничение для продакшена
+MAX_ITEMS = int(os.environ.get('MAX_ITEMS', 99999999999999)) # Лимит товаров из .env или без ограничений
 YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
+YANDEX_DISK_IMAGES_FOLDER_PATH = os.environ.get('YANDEX_DISK_IMAGES_FOLDER_PATH', '/images/')  # Путь к папке изображений на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
 
 # Конфигурация для локального хранения изображений
@@ -90,7 +91,6 @@ CITY_LIST = [
     "Елец",
     "Новомосковск",
     "Липецк",
-    "Пятигорск",
     "Киров",
     "Орск",
 ]
@@ -440,7 +440,7 @@ def process_images_for_original_products(ad_element, output_dir, ad_id, shop_ima
     return process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path)
 
 def process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path=None):
-    """Обработка URL изображений для оригинальных товаров с сохранением в uniqualized_images"""
+    """Обработка URL изображений для оригинальных товаров с загрузкой на Яндекс.Диск"""
     if not original_urls:
         return []
 
@@ -451,41 +451,59 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
         if not img_url:
             continue
 
-        # Определение пути сохранения в папку uniqualized_images
+        # Определение пути сохранения в папку uniqualized_images (временно)
         output_filename = f"{ad_id}_original_{i+1}_{uuid.uuid4().hex[:8]}.jpg"
-        output_path = os.path.join(output_dir, output_filename)
+        temp_output_path = os.path.join(output_dir, output_filename)
 
         # Определяем, нужно ли использовать add_shop_image для первого изображения
         if i == 0 and shop_image_path and os.path.exists(shop_image_path):
-            result_path = add_shop_image(img_url, shop_image_path, output_path)
+            result_path = add_shop_image(img_url, shop_image_path, temp_output_path)
         elif i < 4:  # Накладываем водяной знак только на первые 4 изображения
             # Выбираем подходящий оверлей в зависимости от порядкового номера изображения
             # Используем остаток от деления на длину списка, чтобы не выйти за границы
             overlay_index = i % len(OVERLAY_IMAGES)
             overlay_path = OVERLAY_IMAGES[overlay_index]
             
-            result_path = overlay_image(img_url, overlay_path, output_path)
+            result_path = overlay_image(img_url, overlay_path, temp_output_path)
         else:
             # Для остальных изображений просто сохраняем без водяного знака
             try:
                 response = requests.get(img_url)
                 if response.status_code == 200:
-                    with open(output_path, 'wb') as f:
+                    with open(temp_output_path, 'wb') as f:
                         f.write(response.content)
-                    result_path = output_path
+                    result_path = temp_output_path
                 else:
                     result_path = None
             except Exception as e:
                 result_path = None
         
         if result_path:
-            # Генерируем локальный URL для изображения
-            local_url = generate_local_image_url(result_path)
-            processed_urls.append(local_url)
-            print(f"Обработано изображение оригинального товара: {output_filename} -> {local_url}")
-    
-    # Изображения магазина теперь добавляются в основной функции process_xml,
-    # поэтому здесь мы их не добавляем
+            try:
+                # Загружаем изображение базового товара на Яндекс.Диск
+                yandex_url = upload_image_to_yandex_disk(result_path, output_filename)
+                
+                # Удаляем временный локальный файл
+                try:
+                    os.remove(result_path)
+                    print(f"🧹 Удален временный файл: {result_path}")
+                except Exception as e:
+                    print(f"⚠️ Не удалось удалить временный файл {result_path}: {e}")
+                
+                if yandex_url:
+                    processed_urls.append(yandex_url)
+                    print(f"☁️ Изображение базового товара {output_filename} загружено на Яндекс.Диск: {yandex_url}")
+                else:
+                    print(f"❌ Ошибка загрузки на Яндекс.Диск для {output_filename}")
+                    # В случае ошибки оставляем локальный URL (deprecated, но для совместимости)
+                    local_url = generate_local_image_url(result_path)
+                    processed_urls.append(local_url)
+                    
+            except Exception as e:
+                print(f"❌ Ошибка при загрузке изображения базового товара на Яндекс.Диск: {e}")
+                # В случае ошибки оставляем локальный URL (deprecated, но для совместимости)
+                local_url = generate_local_image_url(result_path)
+                processed_urls.append(local_url)
     
     return processed_urls
 
@@ -792,6 +810,224 @@ def upload_to_yandex_disk(file_path, force_update=True):
     except Exception as e:
         print(f"❌ Ошибка при загрузке файла на Яндекс.Диск: {e}")
         return None
+
+def upload_image_to_yandex_disk(local_image_path, remote_filename):
+    """
+    Загружает изображение на Яндекс.Диск и возвращает постоянную публичную ссылку
+    
+    Args:
+        local_image_path (str): Локальный путь к изображению
+        remote_filename (str): Имя файла на Яндекс.Диске
+    
+    Returns:
+        str: Постоянная публичная ссылка на изображение или None при ошибке
+    """
+    try:
+        # Проверяем наличие токена
+        if not YANDEX_DISK_TOKEN:
+            print("❌ Токен Яндекс.Диска не найден в переменной окружения YANDEX_DISK_TOKEN")
+            return None
+        
+        # Проверяем существование локального файла
+        if not os.path.exists(local_image_path):
+            print(f"❌ Локальный файл не найден: {local_image_path}")
+            return None
+            
+        # Проверяем размер файла
+        file_size = os.path.getsize(local_image_path)
+        if file_size == 0:
+            print(f"❌ Файл пустой (0 байт): {local_image_path}")
+            return None
+        
+        print(f"📤 Загружаем файл {remote_filename} (размер: {file_size} байт)")
+            
+        # Создаем клиент Яндекс.Диска
+        try:
+            disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
+            
+            # Проверяем валидность токена
+            if not disk.check_token():
+                print("❌ Недействительный токен Яндекс.Диска")
+                return None
+                
+        except Exception as token_error:
+            print(f"❌ Ошибка создания клиента Яндекс.Диска: {token_error}")
+            return None
+            
+        # Определяем полный путь на Яндекс.Диске
+        remote_path = f"{YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/')}/{remote_filename}"
+        print(f"📂 Путь на Яндекс.Диске: {remote_path}")
+        
+        # Создаем папку если она не существует
+        try:
+            disk.get_meta(YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/'))
+            print(f"✅ Папка {YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/')} существует")
+        except yadisk.exceptions.NotFoundError:
+            print(f"📁 Создаем папку {YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/')}")
+            try:
+                disk.mkdir(YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/'))
+                print(f"✅ Папка создана успешно")
+            except Exception as mkdir_error:
+                print(f"❌ Ошибка создания папки: {mkdir_error}")
+                return None
+        except Exception as folder_error:
+            print(f"❌ Ошибка проверки папки: {folder_error}")
+            return None
+        
+        # Загружаем файл
+        try:
+            print(f"⬆️ Начинаем загрузку файла...")
+            disk.upload(local_image_path, remote_path, overwrite=True)
+            print(f"✅ Файл успешно загружен на Яндекс.Диск")
+        except Exception as upload_error:
+            print(f"❌ Ошибка загрузки файла: {upload_error}")
+            print(f"❌ Тип ошибки: {type(upload_error).__name__}")
+            return None
+        
+        # Получаем метаданные и делаем файл публичным
+        try:
+            print(f"📋 Получаем метаданные файла...")
+            meta = disk.get_meta(remote_path)
+            
+            # Делаем файл публичным если он еще не публичный
+            if not meta.public_url:
+                print(f"🔓 Делаем файл публичным...")
+                disk.publish(remote_path)
+                # Получаем обновленные метаданные
+                meta = disk.get_meta(remote_path)
+            
+            if meta.public_url:
+                print(f"✅ Публичная ссылка получена: {meta.public_url}")
+                return meta.public_url
+            else:
+                print(f"❌ Не удалось получить публичную ссылку")
+                return None
+                
+        except Exception as meta_error:
+            print(f"❌ Ошибка получения метаданных или публикации: {meta_error}")
+            print(f"❌ Тип ошибки: {type(meta_error).__name__}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Общая ошибка при загрузке изображения на Яндекс.Диск: {e}")
+        print(f"❌ Тип ошибки: {type(e).__name__}")
+        return None
+
+def delete_product_images_from_yandex_disk(base_product_id):
+    """
+    Удаляет все изображения товара (базового и производных) с Яндекс.Диска и остатки локальных файлов
+    
+    Args:
+        base_product_id (str): Базовый ID товара (например, bz1, bz2)
+    
+    Returns:
+        bool: True если удаление прошло успешно, False при ошибке
+    """
+    success = True
+    
+    try:
+        # Проверяем наличие токена
+        if not YANDEX_DISK_TOKEN:
+            print("❌ Токен Яндекс.Диска не найден в переменной окружения YANDEX_DISK_TOKEN")
+            success = False
+        else:
+            # Создаем клиент Яндекс.Диска
+            try:
+                disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
+                
+                # Проверяем валидность токена
+                if not disk.check_token():
+                    print("❌ Токен Яндекс.Диска недействителен")
+                    success = False
+                else:
+                    # Проверяем, существует ли папка с изображениями
+                    try:
+                        disk.get_meta(YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/'))
+                        
+                        # Получаем список всех файлов в папке изображений
+                        files_to_delete = []
+                        
+                        # Перебираем файлы в папке
+                        for item in disk.listdir(YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/')):
+                            if item.type == 'file':
+                                filename = item.name
+                                
+                                # Проверяем, относится ли файл к нашему товару
+                                # Ищем файлы, которые начинаются с base_product_id
+                                # Примеры: bz1_derived_1_abc123.jpg, bz1_original_1_def456.jpg
+                                if filename.startswith(f"{base_product_id}_"):
+                                    file_path = f"{YANDEX_DISK_IMAGES_FOLDER_PATH.rstrip('/')}/{filename}"
+                                    files_to_delete.append((filename, file_path))
+                        
+                        # Удаляем найденные файлы с Яндекс.Диска
+                        deleted_count = 0
+                        for filename, file_path in files_to_delete:
+                            try:
+                                disk.remove(file_path)
+                                print(f"🗑️ Удален файл с Яндекс.Диска: {filename}")
+                                deleted_count += 1
+                            except Exception as e:
+                                print(f"⚠️ Ошибка при удалении файла {filename} с Яндекс.Диска: {e}")
+                                success = False
+                        
+                        if deleted_count > 0:
+                            print(f"✅ Удалено {deleted_count} файлов с Яндекс.Диска для товара {base_product_id}")
+                        else:
+                            print(f"📝 Файлы для товара {base_product_id} не найдены на Яндекс.Диске")
+                        
+                    except yadisk.exceptions.NotFoundError:
+                        print(f"📁 Папка изображений {YANDEX_DISK_IMAGES_FOLDER_PATH} не найдена")
+                        # Папки нет, значит нечего удалять на Яндекс.Диске
+                    
+            except Exception as e:
+                print(f"❌ Ошибка при создании клиента Яндекс.Диска: {e}")
+                success = False
+    
+    except Exception as e:
+        print(f"❌ Ошибка при работе с Яндекс.Диском для товара {base_product_id}: {e}")
+        success = False
+    
+    # Удаляем остатки локальных изображений товара (если есть)
+    try:
+        # Удаляем из папки processed_images (старые файлы)
+        if os.path.exists(LOCAL_IMAGES_DIR):
+            deleted_local = 0
+            for filename in os.listdir(LOCAL_IMAGES_DIR):
+                if filename.startswith(f"{base_product_id}_"):
+                    file_path = os.path.join(LOCAL_IMAGES_DIR, filename)
+                    try:
+                        os.remove(file_path)
+                        print(f"🗑️ Удален локальный файл: {file_path}")
+                        deleted_local += 1
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при удалении локального файла {file_path}: {e}")
+                        success = False
+            
+            if deleted_local > 0:
+                print(f"🧹 Удалено {deleted_local} локальных файлов для товара {base_product_id}")
+        
+        # Удаляем из папки uniqualized_images (старые файлы)
+        if os.path.exists(LOCAL_UNIQUE_IMAGES_DIR):
+            deleted_unique = 0
+            for filename in os.listdir(LOCAL_UNIQUE_IMAGES_DIR):
+                if filename.startswith(f"{base_product_id}_"):
+                    file_path = os.path.join(LOCAL_UNIQUE_IMAGES_DIR, filename)
+                    try:
+                        os.remove(file_path)
+                        print(f"🗑️ Удален локальный базовый файл: {file_path}")
+                        deleted_unique += 1
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при удалении локального базового файла {file_path}: {e}")
+                        success = False
+            
+            if deleted_unique > 0:
+                print(f"🧹 Удалено {deleted_unique} локальных базовых файлов для товара {base_product_id}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при удалении локальных изображений товара {base_product_id}: {e}")
+        success = False
+    
+    return success
 
 def sync_excel_from_yandex_disk():
     """Скачивание актуальной версии Excel-файла с Яндекс.Диска и объединение с локальными изменениями"""
@@ -1371,6 +1607,15 @@ def process_xml(use_gdrive_for_images=True):
             
             # Удаляем все связанные записи из DataFrame
             existing_data = existing_data[~existing_data['Id'].astype(str).isin(all_ids_to_remove)]
+            
+            # Удаляем изображения с Яндекс.Диска для всех удаленных базовых товаров
+            print(f"🗑️ Удаление изображений с Яндекс.Диска для удаленных товаров...")
+            for removed_id in removed_base_ids:
+                success = delete_product_images_from_yandex_disk(removed_id)
+                if success:
+                    print(f"✅ Изображения товара {removed_id} удалены с Яндекс.Диска")
+                else:
+                    print(f"⚠️ Проблема при удалении изображений товара {removed_id}")
         
         # Сохраняем обновленную таблицу
         existing_data.to_excel(OUTPUT_EXCEL_PATH, index=False)
@@ -1754,8 +1999,8 @@ def process_xml(use_gdrive_for_images=True):
     # Очищаем папку с обработанными изображениями после завершения всех операций
     clean_processed_images_folder()
     
-    # НЕ очищаем папку с уникализированными изображениями - они должны сохраняться!
-    # clean_uniqualized_images_folder()
+    # Очищаем папку с уникализированными изображениями после завершения всех операций
+    clean_uniqualized_images_folder()
     
     # Выводим итоговую статистику обработки
     print("=" * 50)
@@ -1825,7 +2070,8 @@ def job():
         # Дополнительная очистка папки processed_images на случай, если что-то осталось
         print("🧹 Очистка временных файлов...")
         clean_processed_images_folder()
-        print("✅ Очистка завершена")
+        clean_uniqualized_images_folder()
+        self.stdout.write(self.style.SUCCESS("✅ Очистка завершена"))
     else:
         print("❌ Ошибка при загрузке XML-файла")
         
@@ -2018,31 +2264,53 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
     Возвращает: путь к уникализированному изображению
     """
     try:
-        print(f"Уникализация изображения для города с индексом {city_index}")
+        print(f"🎨 Уникализация изображения для города с индексом {city_index}")
+        print(f"📥 Вход: {input_image_path_or_url}")
+        print(f"📤 Выход: {output_path}")
         
         # Определяем, является ли вход URL или локальным путем
         is_url = input_image_path_or_url.startswith('http')
+        print(f"🌐 Это URL: {is_url}")
         
         if is_url:
             # Загрузка изображения из URL
+            print(f"⬇️ Загружаем изображение по URL...")
             response = requests.get(input_image_path_or_url)
             if response.status_code != 200:
-                print(f"Ошибка загрузки изображения по URL {input_image_path_or_url}, код: {response.status_code}")
+                print(f"❌ Ошибка загрузки изображения по URL {input_image_path_or_url}, код: {response.status_code}")
                 return None
-                
+            
+            print(f"✅ Изображение загружено, размер: {len(response.content)} байт")
             img = PILImage.open(BytesIO(response.content))
         else:
             # Загрузка локального изображения
+            print(f"📁 Загружаем локальное изображение...")
+            if not os.path.exists(input_image_path_or_url):
+                print(f"❌ Локальный файл не существует: {input_image_path_or_url}")
+                return None
+            
+            file_size = os.path.getsize(input_image_path_or_url)
+            print(f"📊 Размер локального файла: {file_size} байт")
+            
+            if file_size == 0:
+                print(f"❌ Локальный файл пустой")
+                return None
+                
             img = PILImage.open(input_image_path_or_url)
+        
+        print(f"🖼️ Исходное изображение: {img.size[0]}x{img.size[1]}, режим: {img.mode}")
         
         # Конвертируем в RGB, если это не RGB
         if img.mode != 'RGB':
+            print(f"🔄 Конвертируем из {img.mode} в RGB")
             img = img.convert('RGB')
         
         # 1. Изменение контраста и яркости
         # Используем индекс города для вариации параметров
         contrast_factor = 1.0 + (city_index % 3 + 1) * 0.05  # Варьируется от 1.05 до 1.15
         brightness_factor = 1.0 + (city_index % 5 - 2) * 0.02  # Варьируется от 0.96 до 1.04
+        
+        print(f"🎨 Применяем контраст: {contrast_factor:.3f}, яркость: {brightness_factor:.3f}")
         
         # Применяем изменения контраста
         enhancer = ImageEnhance.Contrast(img)
@@ -2054,6 +2322,7 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
         
         # 2. Добавление шума
         # Создаем массив NumPy из изображения
+        print(f"🔊 Добавляем шум...")
         img_array = np.array(img)
         
         # Генерируем шум на основе индекса города
@@ -2067,18 +2336,40 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
         # 3. Легкое размытие (для некоторых изображений)
         if city_index % 3 == 0:
             blur_radius = (city_index % 2) * 0.3 + 0.1  # Варьируется от 0.1 до 0.4
+            print(f"🌫️ Применяем размытие с радиусом: {blur_radius}")
             img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         
         # 4. Небольшой поворот для некоторых изображений
         if city_index % 4 == 0:
             rotation_angle = (city_index % 3 - 1) * 0.5  # Варьируется от -0.5 до 0.5 градусов
+            print(f"🔄 Поворачиваем на угол: {rotation_angle} градусов")
             img = img.rotate(rotation_angle, resample=PILImage.BICUBIC, expand=False)
         
+        # Создаем выходную директорию если её нет
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            print(f"📁 Создаем выходную директорию: {output_dir}")
+            os.makedirs(output_dir, exist_ok=True)
+        
         # Сохраняем измененное изображение
+        print(f"💾 Сохраняем уникализированное изображение...")
         img.save(output_path, quality=95)
+        
+        # Проверяем, что файл действительно сохранен
+        if not os.path.exists(output_path):
+            print(f"❌ Файл не был сохранен: {output_path}")
+            return None
+            
+        saved_size = os.path.getsize(output_path)
+        print(f"✅ Файл сохранен, размер: {saved_size} байт")
+        
+        if saved_size == 0:
+            print(f"❌ Сохраненный файл пустой")
+            return None
         
         # 5. Изменение метаданных (EXIF)
         try:
+            print(f"📋 Изменяем EXIF метаданные...")
             # Создаем базовые EXIF данные
             exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}}
             
@@ -2102,8 +2393,11 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             manufacturer = manufacturers[city_index % len(manufacturers)]
             exif_dict['0th'][piexif.ImageIFD.Make] = manufacturer
             
+            print(f"📱 Камера: {manufacturer} {camera_model}, дата: {creation_date}")
+            
             # Добавляем случайные GPS координаты для некоторых изображений
             if city_index % 3 == 0:
+                print(f"🗺️ Добавляем GPS координаты...")
                 # Координаты некоторых городов России (примерные)
                 city_coords = [
                     (55.7558, 37.6173),  # Москва
@@ -2145,8 +2439,9 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
                     # Преобразуем координаты в формат рациональных чисел
                     exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = to_deg(abs(lat), 'lat')
                     exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = to_deg(abs(lon), 'lon')
+                    print(f"📍 GPS: {lat:.4f}, {lon:.4f}")
                 except Exception as e:
-                    print(f"Ошибка при добавлении GPS данных: {e}")
+                    print(f"⚠️ Ошибка при добавлении GPS данных: {e}")
                     # Удаляем GPS данные, чтобы не вызвать ошибку при сохранении
                     exif_dict['GPS'] = {}
             
@@ -2154,9 +2449,9 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             try:
                 exif_bytes = piexif.dump(exif_dict)
                 piexif.insert(exif_bytes, output_path)
-                print(f"EXIF метаданные успешно изменены для изображения {output_path}")
+                print(f"✅ EXIF метаданные успешно изменены для изображения {output_path}")
             except Exception as e:
-                print(f"Ошибка при сохранении EXIF данных: {e}")
+                print(f"⚠️ Ошибка при сохранении EXIF данных: {e}")
                 # Если не удалось сохранить все метаданные, пробуем сохранить только основные
                 try:
                     # Создаем более простой EXIF словарь без GPS данных
@@ -2166,48 +2461,128 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
                     
                     exif_bytes = piexif.dump(simple_exif)
                     piexif.insert(exif_bytes, output_path)
-                    print(f"Упрощенные EXIF метаданные сохранены для изображения {output_path}")
+                    print(f"✅ Упрощенные EXIF метаданные сохранены для изображения {output_path}")
                 except Exception as e2:
-                    print(f"Не удалось сохранить даже упрощенные EXIF метаданные: {e2}")
+                    print(f"⚠️ Не удалось сохранить даже упрощенные EXIF метаданные: {e2}")
             
         except Exception as e:
-            print(f"Ошибка при изменении EXIF метаданных: {e}")
+            print(f"⚠️ Ошибка при изменении EXIF метаданных: {e}")
             # Продолжаем выполнение, так как изображение уже было сохранено с визуальными изменениями
         
+        print(f"✅ Уникализация завершена успешно: {output_path}")
         return output_path
         
     except Exception as e:
-        print(f"Ошибка при уникализации изображения: {e}")
+        print(f"❌ Ошибка при уникализации изображения: {e}")
+        print(f"❌ Тип ошибки: {type(e).__name__}")
         import traceback
         traceback.print_exc()
         return None
 
 def process_image_for_derived_products(original_image_url, output_dir, base_ad_id, city_index):
     """
-    Обрабатывает изображение для производных товаров с уникализацией
+    Обрабатывает изображение для производных товаров с уникализацией и загрузкой на Яндекс.Диск
     
-    original_image_url: URL исходного изображения
-    output_dir: директория для сохранения обработанных изображений
+    original_image_url: URL исходного изображения (может быть локальным URL сервера или публичной ссылкой Яндекс.Диск)
+    output_dir: директория для временного сохранения обработанных изображений
     base_ad_id: базовый ID товара
     city_index: индекс города (для вариации параметров уникализации)
     
-    Возвращает: URL уникализированного изображения (локальный URL)
+    Возвращает: URL уникализированного изображения с Яндекс.Диска или исходный URL при ошибке
     """
+    print(f"🔧 Обработка изображения для производного товара: {base_ad_id}, город {city_index}")
+    print(f"📥 Исходное изображение: {original_image_url}")
+    
     # Формируем уникальное имя файла
     output_filename = f"{base_ad_id}_derived_{city_index}_{uuid.uuid4().hex[:8]}.jpg"
-    output_path = os.path.join(output_dir, output_filename)
+    temp_output_path = os.path.join(output_dir, output_filename)
+    print(f"📁 Временный путь: {temp_output_path}")
     
-    # Уникализируем изображение
-    result_path = uniqualize_image(original_image_url, output_path, city_index)
+    # Создаем выходную директорию если её нет
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Определяем тип ссылки и подготавливаем путь для уникализации
+    local_image_path = original_image_url
+    
+    # Преобразуем URL обратно в локальный путь если это локальный URL сервера
+    if original_image_url.startswith(SERVER_BASE_URL):
+        # Преобразуем URL сервера в локальный путь
+        relative_path = original_image_url.replace(SERVER_BASE_URL, "")
+        if relative_path.startswith("/media/uniqualized_images/"):
+            local_image_path = relative_path.replace("/media/uniqualized_images/", LOCAL_UNIQUE_IMAGES_DIR + "/")
+        elif relative_path.startswith("/media/processed_images/"):
+            local_image_path = relative_path.replace("/media/processed_images/", LOCAL_IMAGES_DIR + "/")
+        else:
+            # Если это другой путь, оставляем как есть
+            local_image_path = "media" + relative_path
+        
+        print(f"🔄 Преобразован локальный URL {original_image_url} в путь {local_image_path}")
+        
+        # Проверяем, существует ли файл локально
+        if not os.path.exists(local_image_path):
+            print(f"❌ Локальный файл не найден: {local_image_path}")
+            return original_image_url
+    elif original_image_url.startswith('https://yadi.sk/') or original_image_url.startswith('https://disk.yandex.ru/'):
+        # Это публичная ссылка на Яндекс.Диск, получаем прямую ссылку для скачивания
+        print(f"☁️ Получаем прямую ссылку с Яндекс.Диска...")
+        download_url = get_yandex_disk_download_url(original_image_url)
+        print(f"🔗 Прямая ссылка: {download_url}")
+        local_image_path = download_url
+    else:
+        # Это может быть прямая ссылка на изображение или локальный путь
+        print(f"🌐 Используется изображение по URL: {original_image_url}")
+    
+    # Уникализируем изображение (временно сохраняем локально)
+    print(f"⚙️ Начинаем уникализацию изображения...")
+    result_path = uniqualize_image(local_image_path, temp_output_path, city_index)
     
     if result_path:
-        # Генерируем локальный URL для изображения
-        local_url = generate_local_image_url(result_path)
-        print(f"Уникализированное изображение {output_filename} сохранено локально: {local_url}")
-        return local_url
+        print(f"✅ Уникализация завершена: {result_path}")
+        
+        # Проверяем, что файл действительно создан
+        if not os.path.exists(result_path):
+            print(f"❌ Уникализированный файл не найден: {result_path}")
+            return original_image_url
+            
+        # Проверяем размер уникализированного файла
+        file_size = os.path.getsize(result_path)
+        print(f"📊 Размер уникализированного файла: {file_size} байт")
+        
+        if file_size == 0:
+            print(f"❌ Уникализированный файл пустой")
+            return original_image_url
+        
+        try:
+            # Загружаем уникализированное изображение на Яндекс.Диск
+            print(f"☁️ Загружаем на Яндекс.Диск: {output_filename}")
+            yandex_url = upload_image_to_yandex_disk(result_path, output_filename)
+            
+            # Удаляем временный локальный файл
+            try:
+                os.remove(result_path)
+                print(f"🧹 Удален временный файл: {result_path}")
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить временный файл {result_path}: {e}")
+            
+            if yandex_url:
+                print(f"✅ Уникализированное изображение {output_filename} загружено на Яндекс.Диск: {yandex_url}")
+                return yandex_url
+            else:
+                print(f"❌ Ошибка загрузки на Яндекс.Диск для {output_filename}")
+                return original_image_url
+                
+        except Exception as e:
+            print(f"❌ Исключение при загрузке изображения на Яндекс.Диск: {e}")
+            print(f"❌ Тип ошибки: {type(e).__name__}")
+            # Удаляем временный файл в случае ошибки
+            try:
+                if os.path.exists(result_path):
+                    os.remove(result_path)
+            except:
+                pass
+            return original_image_url
     else:
-        print(f"Ошибка: не удалось уникализировать изображение {output_filename}")
-        # В случае ошибки возвращаем исходный URL
+        print(f"❌ Ошибка: не удалось уникализировать изображение {output_filename}")
         return original_image_url
 
 def update_existing_records(existing_data, xml_root):
@@ -2413,6 +2788,34 @@ def get_service_account_email():
     """
     return 'не используется'
 
+def get_yandex_disk_download_url(public_url):
+    """
+    Получает прямую ссылку для скачивания файла из публичной ссылки Яндекс.Диска
+    
+    Args:
+        public_url (str): Публичная ссылка на файл на Яндекс.Диске
+    
+    Returns:
+        str: Прямая ссылка для скачивания или исходная ссылка при ошибке
+    """
+    try:
+        if not YANDEX_DISK_TOKEN:
+            return public_url
+            
+        # Создаем клиент Яндекс.Диска
+        disk = yadisk.YaDisk(token=YANDEX_DISK_TOKEN)
+        
+        if not disk.check_token():
+            return public_url
+        
+        # Получаем прямую ссылку для скачивания через публичную ссылку
+        download_url = disk.get_public_download_link(public_url)
+        return download_url
+        
+    except Exception as e:
+        print(f"⚠️ Не удалось получить прямую ссылку для скачивания: {e}")
+        return public_url
+
 # Django Management Command
 from django.core.management.base import BaseCommand
 
@@ -2499,6 +2902,7 @@ class Command(BaseCommand):
             # Дополнительная очистка папки processed_images
             self.stdout.write("🧹 Очистка временных файлов...")
             clean_processed_images_folder()
+            clean_uniqualized_images_folder()
             self.stdout.write(self.style.SUCCESS("✅ Очистка завершена"))
         else:
             self.stdout.write(self.style.ERROR("❌ Ошибка при загрузке XML-файла"))
