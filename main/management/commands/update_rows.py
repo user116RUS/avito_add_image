@@ -2464,46 +2464,43 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             print(f"❌ Ошибка после применения яркости: {brightness_error}")
             return None
         
-        # 2. Легкое размытие (чаще применяем и с большим радиусом)
-        if city_index % 3 == 0:  # Чаще применяем размытие
-            blur_radius = (city_index % 3) * 0.2 + 0.1  # Увеличиваем радиус: от 0.1 до 0.5
-            print(f"🌫️ Применяем размытие с радиусом: {blur_radius}")
-            try:
-                img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-                img.load()  # Проверяем доступность после размытия
-                print(f"✅ Размытие применено успешно")
-            except Exception as blur_error:
-                print(f"❌ Ошибка при применении размытия: {blur_error}")
-                return None
+        # 2. Легкое размытие - применяем ВСЕГДА для гарантированной уникализации
+        blur_radius = (city_index % 3) * 0.2 + 0.1  # Радиус: от 0.1 до 0.5
+        print(f"🌫️ Применяем размытие с радиусом: {blur_radius}")
+        try:
+            img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            img.load()  # Проверяем доступность после размытия
+            print(f"✅ Размытие применено успешно")
+        except Exception as blur_error:
+            print(f"❌ Ошибка при применении размытия: {blur_error}")
+            return None
         
-        # 3. Изменение насыщенности (более заметное)
-        if city_index % 2 == 0:  # Чаще применяем
-            saturation_factor = 1.0 + (city_index % 3 - 1) * 0.08  # Увеличиваем: от 0.84 до 1.16
-            print(f"🌈 Применяем насыщенность: {saturation_factor:.3f}")
-            try:
-                enhancer = ImageEnhance.Color(img)
-                img = enhancer.enhance(saturation_factor)
-                img.load()  # Проверяем доступность после насыщенности
-                print(f"✅ Насыщенность применена успешно")
-            except Exception as saturation_error:
-                print(f"❌ Ошибка при применении насыщенности: {saturation_error}")
-                return None
+        # 3. Изменение насыщенности - применяем ВСЕГДА
+        saturation_factor = 1.0 + (city_index % 3 - 1) * 0.08  # От 0.84 до 1.16
+        print(f"🌈 Применяем насыщенность: {saturation_factor:.3f}")
+        try:
+            enhancer = ImageEnhance.Color(img)
+            img = enhancer.enhance(saturation_factor)
+            img.load()  # Проверяем доступность после насыщенности
+            print(f"✅ Насыщенность применена успешно")
+        except Exception as saturation_error:
+            print(f"❌ Ошибка при применении насыщенности: {saturation_error}")
+            return None
         
-        # 4. Добавляем легкое изменение резкости для некоторых изображений
-        if city_index % 4 == 0:
-            sharpness_factor = 1.0 + (city_index % 2 - 0.5) * 0.3  # От 0.85 до 1.15
-            print(f"🔪 Применяем резкость: {sharpness_factor:.3f}")
-            try:
-                enhancer = ImageEnhance.Sharpness(img)
-                img = enhancer.enhance(sharpness_factor)
-                img.load()  # Проверяем доступность после резкости
-                print(f"✅ Резкость применена успешно")
-            except Exception as sharpness_error:
-                print(f"❌ Ошибка при применении резкости: {sharpness_error}")
-                return None
+        # 4. Изменение резкости - применяем ВСЕГДА
+        sharpness_factor = 1.0 + (city_index % 2 - 0.5) * 0.3  # От 0.85 до 1.15
+        print(f"🔪 Применяем резкость: {sharpness_factor:.3f}")
+        try:
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(sharpness_factor)
+            img.load()  # Проверяем доступность после резкости
+            print(f"✅ Резкость применена успешно")
+        except Exception as sharpness_error:
+            print(f"❌ Ошибка при применении резкости: {sharpness_error}")
+            return None
         
-        # 5. Небольшая обрезка для дополнительной уникализации
-        if city_index % 6 == 0:  # Применяем к части изображений
+        # 5. Небольшая обрезка - применяем к большинству изображений
+        if city_index % 4 != 0:  # Применяем к 75% изображений (увеличиваем частоту)
             width, height = img.size
             
             # Очень небольшая обрезка (1-3 пикселя с каждой стороны)
@@ -2525,34 +2522,33 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
                     print(f"❌ Ошибка при обрезке изображения: {crop_error}")
                     return None
         
-        # 6. Добавление зернистости (шума) - безопасный способ
-        if city_index % 4 != 0:  # Применяем к большинству изображений
-            try:
-                print(f"🌾 Добавляем зернистость...")
-                
-                # Конвертируем в numpy для добавления шума
-                img_array = np.array(img)
-                
-                # Создаем слабый шум (очень небольшой)
-                noise_intensity = 2 + (city_index % 3)  # 2, 3 или 4
-                noise = np.random.normal(0, noise_intensity, img_array.shape).astype(np.int16)
-                
-                # Добавляем шум к изображению с ограничениями
-                noisy_array = img_array.astype(np.int16) + noise
-                noisy_array = np.clip(noisy_array, 0, 255).astype(np.uint8)
-                
-                # Конвертируем обратно в PIL - исправляем синтаксис
-                img = PILImage.fromarray(noisy_array)
-                img.load()  # Проверяем доступность
-                
-                print(f"✅ Зернистость добавлена (интенсивность: {noise_intensity})")
-                
-            except Exception as noise_error:
-                print(f"⚠️ Ошибка при добавлении зернистости: {noise_error}")
-                print("📝 Продолжаем без зернистости...")
+        # 6. Добавление зернистости - применяем ВСЕГДА для максимальной уникализации
+        try:
+            print(f"🌾 Добавляем зернистость...")
+            
+            # Конвертируем в numpy для добавления шума
+            img_array = np.array(img)
+            
+            # Создаем слабый шум (очень небольшой)
+            noise_intensity = 2 + (city_index % 3)  # 2, 3 или 4
+            noise = np.random.normal(0, noise_intensity, img_array.shape).astype(np.int16)
+            
+            # Добавляем шум к изображению с ограничениями
+            noisy_array = img_array.astype(np.int16) + noise
+            noisy_array = np.clip(noisy_array, 0, 255).astype(np.uint8)
+            
+            # Конвертируем обратно в PIL - исправляем синтаксис
+            img = PILImage.fromarray(noisy_array)
+            img.load()  # Проверяем доступность
+            
+            print(f"✅ Зернистость добавлена (интенсивность: {noise_intensity})")
+            
+        except Exception as noise_error:
+            print(f"⚠️ Ошибка при добавлении зернистости: {noise_error}")
+            print("📝 Продолжаем без зернистости...")
         
-        # 7. Небольшой поворот изображения
-        if city_index % 3 == 0:  # Применяем к части изображений
+        # 7. Небольшой поворот изображения - применяем к большинству изображений  
+        if city_index % 4 != 0:  # Применяем к 75% изображений (увеличиваем частоту)
             try:
                 rotation_angle = ((city_index % 7) - 3) * 0.05  # От -0.15 до +0.15 градусов (очень малые углы)
                 if abs(rotation_angle) > 0.02:  # Поворачиваем только если угол значимый
@@ -2567,6 +2563,20 @@ def uniqualize_image(input_image_path_or_url, output_path, city_index):
             except Exception as rotation_error:
                 print(f"⚠️ Ошибка при повороте: {rotation_error}")
                 print("📝 Продолжаем без поворота...")
+        
+        # 8. Дополнительная гарантия уникализации - применяем еще один эффект для надежности
+        if city_index % 2 == 0:  # Для четных индексов добавляем еще одно изменение
+            # Дополнительное легкое изменение гаммы для абсолютной гарантии различий
+            gamma = 1.0 + (city_index % 5 - 2) * 0.02  # От 0.96 до 1.04
+            print(f"🔆 Применяем дополнительную коррекцию гаммы: {gamma:.3f}")
+            try:
+                # Применяем гамма-коррекцию через таблицу LUT
+                gamma_table = [int(pow(x / 255.0, 1.0 / gamma) * 255) for x in range(256)]
+                img = img.point(gamma_table * 3)  # Умножаем на 3 для RGB каналов
+                img.load()
+                print(f"✅ Гамма-коррекция применена успешно")
+            except Exception as gamma_error:
+                print(f"⚠️ Ошибка при применении гамма-коррекции: {gamma_error}")
         
         # Создаем выходную директорию если её нет
         output_dir = os.path.dirname(output_path)
