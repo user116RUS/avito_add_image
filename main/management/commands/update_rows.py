@@ -26,8 +26,8 @@ import shutil
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = os.environ.get('OUTPUT_EXCEL_PATH', "few_cities_ya_prod.xlsx")
-YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
-MAX_ITEMS = int(os.environ.get('MAX_ITEMS', 99999999999999)) # Лимит товаров из .env или без ограничений
+YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN', "y0_AgAAAABnSMzJAAwGOgAAAAEM75BdAAAs7qf7ZL9GNZQ1xHHyzPTcpDvl_Q")  # Токен Яндекс.Диска из переменной окружения
+MAX_ITEMS = int(os.environ.get('MAX_ITEMS', 3)) # Лимит товаров из .env или без ограничений
 YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
 YANDEX_DISK_IMAGES_FOLDER_PATH = os.environ.get('YANDEX_DISK_IMAGES_FOLDER_PATH', '/images/')  # Путь к папке изображений на Яндекс.Диске
 SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэширования ссылок на изображения магазина
@@ -36,7 +36,7 @@ SHOP_IMAGES_CACHE_FILE = "shop_images_cache.json"  # Файл для кэшир�
 LOCAL_IMAGES_DIR = "media/processed_images"  # Папка для обработанных изображений
 LOCAL_UNIQUE_IMAGES_DIR = "media/uniqualized_images"  # Папка для уникализированных изображений
 SERVER_BASE_URL = "https://custflow-admin.store"  # Базовый URL сервера (изменить на продакшн URL)
-
+GOOGLE_DRIVE_FOLDER_ID = ""
 # Область доступа для Google Drive API
 # SCOPES = ['https://www.googleapis.com/auth/drive']
 
@@ -439,6 +439,7 @@ def process_images_for_original_products(ad_element, output_dir, ad_id, shop_ima
     
     return process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path)
 
+
 def process_image_urls_for_original_products(original_urls, output_dir, ad_id, shop_image_path=None):
     """Обработка URL изображений для оригинальных товаров с загрузкой на Яндекс.Диск"""
     if not original_urls:
@@ -452,7 +453,7 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
             continue
 
         # Определение пути сохранения в папку uniqualized_images (временно)
-        output_filename = f"{ad_id}_original_{i+1}_{uuid.uuid4().hex[:8]}.jpg"
+        output_filename = f"{ad_id}_original_{i + 1}_{uuid.uuid4().hex[:8]}.jpg"
         temp_output_path = os.path.join(output_dir, output_filename)
 
         # Определяем, нужно ли использовать add_shop_image для первого изображения
@@ -463,7 +464,7 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
             # Используем остаток от деления на длину списка, чтобы не выйти за границы
             overlay_index = i % len(OVERLAY_IMAGES)
             overlay_path = OVERLAY_IMAGES[overlay_index]
-            
+
             result_path = overlay_image(img_url, overlay_path, temp_output_path)
         else:
             # Для остальных изображений просто сохраняем без водяного знака
@@ -477,19 +478,19 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
                     result_path = None
             except Exception as e:
                 result_path = None
-        
+
         if result_path:
             try:
                 # Загружаем изображение базового товара на Яндекс.Диск
                 yandex_url = upload_image_to_yandex_disk(result_path, output_filename)
-                
+
                 # Удаляем временный локальный файл
                 try:
                     os.remove(result_path)
                     print(f"🧹 Удален временный файл: {result_path}")
                 except Exception as e:
                     print(f"⚠️ Не удалось удалить временный файл {result_path}: {e}")
-                
+
                 if yandex_url:
                     processed_urls.append(yandex_url)
                     print(f"☁️ Изображение базового товара {output_filename} загружено на Яндекс.Диск: {yandex_url}")
@@ -498,15 +499,40 @@ def process_image_urls_for_original_products(original_urls, output_dir, ad_id, s
                     # В случае ошибки оставляем локальный URL (deprecated, но для совместимости)
                     local_url = generate_local_image_url(result_path)
                     processed_urls.append(local_url)
-                    
+
             except Exception as e:
                 print(f"❌ Ошибка при загрузке изображения базового товара на Яндекс.Диск: {e}")
                 # В случае ошибки оставляем локальный URL (deprecated, но для совместимости)
                 local_url = generate_local_image_url(result_path)
                 processed_urls.append(local_url)
-    
-    return processed_urls
 
+    # Добавляем фото магазина, если основных изображений меньше 10
+    if len(processed_urls) < 10:
+        try:
+            project_root = Path(__file__).parent.parent.parent.parent
+            cache_path = project_root / 'shop_images_cache.json'
+
+            print(f"🔄 Ищем кэш по пути: {cache_path}")
+            # Загрузка кэша
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+            shop_image_urls = cache.get("shop_images", [])
+            print(f"✅ Загружено {len(shop_image_urls)} фото магазина из кэша")
+
+            # Вычисляем сколько нужно добавить фото магазина
+            needed_images = 10 - len(processed_urls)
+            shop_images_to_add = min(needed_images, len(shop_image_urls))
+
+            # Добавляем необходимое количество фото магазина в конец списка
+            if shop_images_to_add > 0:
+                processed_urls.extend(shop_image_urls[:shop_images_to_add])
+                print(f"➕ Добавлено {shop_images_to_add} фото магазина к объявлению")
+
+        except Exception as e:
+            print(f"⚠️ Ошибка при добавлении фото магазина: {e}")
+            print("Продолжаем без добавления фото магазина")
+
+    return processed_urls
 def save_to_excel(df, output_path=OUTPUT_EXCEL_PATH):
     """Сохранение DataFrame в Excel-файл с форматированием исходных строк"""
     
@@ -1319,22 +1345,22 @@ def clean_processed_images_folder():
 def duplicate_rows(data_frame):
     """
     Создает дубли для каждой строки с изменением ID и адреса для каждого города из списка CITY_LIST
-    
+
     data_frame: DataFrame с исходными данными
-    
+
     Возвращает: DataFrame с исходными строками и их дублями
     """
     if data_frame.empty:
         return data_frame
-        
+
     print(f"Создание дублей для {len(data_frame)} строк")
-    
+
     # Ключевые слова, при наличии которых товар не размножается на другие города
     exclude_keywords = ['резонатор', 'глушитель', 'приемные трубы']
-    
+
     # Список для хранения всех строк (исходных и дублей)
     all_rows = []
-    
+
     # Инициализируем Google Drive API для загрузки уникализированных изображений
     gdrive_service = create_drive_service()
     if gdrive_service:
@@ -1342,11 +1368,11 @@ def duplicate_rows(data_frame):
     else:
         print("Ошибка при инициализации Google Drive API")
         print("Уникализированные изображения будут сохранены локально.")
-    
+
     # Создаем директорию для уникализированных изображений
     unique_images_dir = LOCAL_UNIQUE_IMAGES_DIR
     os.makedirs(unique_images_dir, exist_ok=True)
-    
+
     # Загружаем ссылки на изображения магазина из кэша
     shop_image_urls = load_shop_images_cache()
     if shop_image_urls is None:
@@ -1355,108 +1381,108 @@ def duplicate_rows(data_frame):
         print("Не удалось загрузить ссылки на изображения магазина из кэша, используется пустой список")
     else:
         print(f"Загружено {len(shop_image_urls)} ссылок на изображения магазина из кэша")
-    
+
     # Для каждой строки в исходном DataFrame
     for _, row in data_frame.iterrows():
         # Добавляем исходную строку (оригинал без изменений)
         original_row = row.to_dict()
-        
+
         # Устанавливаем значение Delivery для оригинальной строки
         # Если это товар в Туле по адресу "Тула, улица Волнянского, 1", то ПВЗ, иначе пустое значение
         if original_row.get('Address') == 'Тула, улица Волнянского, 1':
             original_row['Delivery'] = 'ПВЗ'
         else:
             original_row['Delivery'] = ''
-        
+
         all_rows.append(original_row)
-        
+
         # Проверяем название товара на наличие ключевых слов
         title = row.get('Title', '')
         if title and pd.notna(title):
             title_lower = title.lower()
             should_skip_duplication = any(keyword in title_lower for keyword in exclude_keywords)
-            
+
             if should_skip_duplication:
                 print(f"Товар '{title}' (ID: {row['Id']}) содержит ключевое слово - пропускаем размножение на города")
                 continue
-        
+
         # Получаем исходный ID
         original_id = row['Id']
-        
+
         # Получаем список URL изображений, если они есть
         original_image_urls = []
         if 'ImageUrls' in row and row['ImageUrls'] and pd.notna(row['ImageUrls']):
             original_image_urls = row['ImageUrls'].split('|')
-        
+
         # Создаем дубли для каждого города из списка CITY_LIST
         for city_index, city in enumerate(CITY_LIST):
             # Создаем копию строки
             duplicate = row.to_dict()
-            
+
             # Изменяем ID (добавляем -1, -2, и т.д.)
             duplicate['Id'] = f"{original_id}-{city_index + 1}"
-            
+
             # Изменяем адрес на город из списка
             duplicate['Address'] = city
-            
+
             # Получаем индекс города для уникализации изображений (теперь city_index уже доступен)
             # city_index = CITY_LIST.index(city)  # Эта строка больше не нужна
-            
+
             # Устанавливаем значение Delivery для копий - всегда "Выключена"
             duplicate['Delivery'] = 'Выключена'
-            
+
             # Модифицируем описание, заменяя блок с доставкой
             if 'Description' in duplicate and duplicate['Description']:
                 description = duplicate['Description']
-                
+
                 # Различные варианты начала текста с доставкой
                 delivery_variations = [
                     "<p><strong>Автозапчасти на Волнянского</strong>",
                     "<p><strong>Автозапчасти на Волнянского </strong>",
                     '<p><strong>Автозапчасти на Волнянского</strong>'
                 ]
-                
+
                 # Различные варианты текста с артикулом
                 article_variations = [
                     "<p>📞Звоните или напишите нам в чат",
                     "<p>📞Звоните или напишите нам в чат",
                     '<p>📞Звоните или напишите нам в чат'
                 ]
-                
+
                 # Текст для поиска (полные блоки)
                 old_text_1 = "<p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>"
                 old_text_2 = "<p>📞Звоните или напишите нам в чат, чтобы уточнить по наличию запчасти в магазине. Если нужной детали нет, доставим в магазин за 2 часа (крупные детали до 2-х дн).</p>"
-                
+
                 # Новый текст с указанием города
                 new_text = f"""<p>🚚<strong> Доставка в {city}</strong> через Авито: Почта России, СДЭК, Boxberry<br /> + Ежедневная отправка<br /> + Надежная упаковка (ничего не повредится)<br /> + Проверка при получении + гарантия</p><p>❗️Напишите в чат перед оформлением заказа❗️</p><p><strong>Автозапчасти на Волнянского</strong> - более 10 000 в наличии + любые под заказ. Оригинальные и проверенные аналоги!</p>
 <p>✔ У нас дешевле, чем в крупных интернет магазинах<br /> ✔ Гарантия до 3-х лет (срок зависит от вида и бренда запчасти)<br /> ✔ Быстрый и легкий возврат товара из наличия в любое время<br /> ✔ Дисконтная карта со скидкой 7% при покупке от 10 тыс. руб.<br /> ✔ Найдем запчасти даже без вин!<br /> <br /> <strong>📣Скидка 5%</strong> на товары в нашем магазине по адресу: г.Тула, ул. Волнянского, 1. (кроме представленных на Avito)</p>
 <p>📍В наличии на складе в г. Тула, улица Волнянского, 1</p>
 <p>📞Звоните или напишите нам в чат, чтобы уточнить по наличию запчасти в магазине. Если нужной детали нет, доставим в магазин за 2 часа (крупные детали до 2-х дн).</p>"""
-                
+
                 # Метод 1: Попытка заменить полные блоки
                 if old_text_1 in description and old_text_2 in description:
                     # Находим начало первого блока и конец второго
                     start_idx = description.find(old_text_1)
                     end_idx = description.find(old_text_2) + len(old_text_2)
-                    
+
                     # Проверяем, что индексы найдены
                     if start_idx != -1 and end_idx != -1:
                         # Заменяем весь блок от начала первого до конца второго
                         new_description = description[:start_idx] + new_text + description[end_idx:]
                         duplicate['Description'] = new_description
                         print(f"Метод 1: Заменен текст в описании для товара {duplicate['Id']} с городом {city}")
-                        
+
                 # Метод 2: Поиск по вариациям начала блоков
                 else:
                     start_idx = -1
                     end_idx = -1
-                    
+
                     # Ищем начало текста с автозапчастями
                     for variation in delivery_variations:
                         if variation in description:
                             start_idx = description.find(variation)
                             break
-                    
+
                     # Если нашли начало, ищем конец блока с телефоном
                     if start_idx != -1:
                         # Ищем начало блока с телефоном
@@ -1465,29 +1491,29 @@ def duplicate_rows(data_frame):
                             if variation in description[start_idx:]:
                                 article_start_idx = description.find(variation, start_idx)
                                 break
-                        
+
                         # Если нашли телефон, ищем его конец
                         if article_start_idx != -1:
                             # Ищем конец абзаца после телефона
                             article_end_idx = description.find("</p>", article_start_idx)
                             if article_end_idx != -1:
                                 end_idx = article_end_idx + 4  # +4 для включения </p>
-                    
+
                     # Если нашли оба индекса, выполняем замену
                     if start_idx != -1 and end_idx != -1:
                         new_description = description[:start_idx] + new_text + description[end_idx:]
                         duplicate['Description'] = new_description
                         print(f"Метод 2: Заменен текст в описании для товара {duplicate['Id']} с городом {city}")
-            
+
             # Уникализируем изображения только для дублей товаров (не для оригинальных)
             if original_image_urls:
                 # Список для новых уникализированных URL
                 unique_image_urls = []
-                
+
                 # Определяем, какие изображения являются изображениями магазина (последние в списке)
                 shop_images = []
                 product_images = original_image_urls.copy()
-                
+
                 # Ищем изображения магазина по URL
                 for url in reversed(original_image_urls):
                     if shop_image_urls and url in shop_image_urls:
@@ -1495,17 +1521,17 @@ def duplicate_rows(data_frame):
                         product_images.remove(url)  # Удаляем из списка изображений продукта
                     else:
                         break  # Прекращаем поиск, если нашли изображение, которое не является изображением магазина
-                
+
                 print(f"Для товара {duplicate['Id']}: найдено {len(product_images)} изображений продукта и {len(shop_images)} изображений магазина")
-                
+
                 # Обрабатываем изображения продукта
                 # Для дублей товаров (товары с суффиксами -1, -2 и т.д.) уникализируем изображения
                 print(f"Товар {duplicate['Id']} является дублем, уникализируем изображения для города")
                 for j, img_url in enumerate(product_images):
                     unique_url = process_image_for_derived_products(
-                        img_url, 
-                        unique_images_dir, 
-                        original_id, 
+                        img_url,
+                        unique_images_dir,
+                        original_id,
                         city_index + j  # Добавляем j для большей вариации
                     )
                     if unique_url:
@@ -1513,24 +1539,48 @@ def duplicate_rows(data_frame):
                     else:
                         # Если уникализация не удалась, используем исходный URL
                         unique_image_urls.append(img_url)
-                
-                # Добавляем изображения магазина без изменений
-                unique_image_urls.extend(shop_images)
-                
+
+
+                # Добавляем фото магазина, если основных изображений меньше 10
+                if len(unique_image_urls) < 10:
+                    try:
+                        project_root = Path(__file__).parent.parent.parent.parent
+                        cache_path = project_root / 'shop_images_cache.json'
+
+                        print(f"🔄 Ищем кэш по пути: {cache_path}")
+                        # Загрузка кэша
+                        with open(cache_path, 'r', encoding='utf-8') as f:
+                            cache = json.load(f)
+                        shop_image_urls = cache.get("shop_images", [])
+                        print(f"✅ Загружено {len(shop_image_urls)} фото магазина из кэша")
+
+                        # Вычисляем сколько нужно добавить фото магазина
+                        needed_images = 10 - len(unique_image_urls)
+                        shop_images_to_add = min(needed_images, len(shop_image_urls))
+
+                        # Добавляем необходимое количество фото магазина в конец списка
+                        if shop_images_to_add > 0:
+                            unique_image_urls.extend(shop_image_urls[:shop_images_to_add])
+                            print(f"➕ Добавлено {shop_images_to_add} фото магазина к объявлению")
+
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при добавлении фото магазина: {e}")
+                        print("Продолжаем без добавления фото магазина")
+
                 # Обновляем ImageUrls в дубле
                 duplicate['ImageUrls'] = "|".join(unique_image_urls)
                 print(f"Для товара {duplicate['Id']}: обновлены URL изображений")
-            
+
             # Добавляем дубль в список всех строк
             all_rows.append(duplicate)
-    
+
     # Создаем новый DataFrame из всех строк
     result_df = pd.DataFrame(all_rows)
-    
+
     # НЕ очищаем папку с уникализированными изображениями здесь!
     # Очистка будет происходить после сохранения данных в Excel
     # clean_uniqualized_images_folder()
-    
+
     print(f"Создано {len(result_df)} строк (исходные + дубли)")
     return result_df
 
