@@ -26,7 +26,7 @@ import shutil
 XML_URL = "https://baz-on.ru/export/c4447/32a54/avito-ipkuznetsov.xml"
 LOCAL_XML_PATH = "few_cities-7.xml"
 OUTPUT_EXCEL_PATH = os.environ.get('OUTPUT_EXCEL_PATH', "few_cities_ya_prod.xlsx")
-YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN', "y0_AgAAAABnSMzJAAwGOgAAAAEM75BdAAAs7qf7ZL9GNZQ1xHHyzPTcpDvl_Q")  # Токен Яндекс.Диска из переменной окружения
+YANDEX_DISK_TOKEN = os.environ.get('YANDEX_DISK_TOKEN')  # Токен Яндекс.Диска из переменной окружения
 MAX_ITEMS = int(os.environ.get('MAX_ITEMS', 3)) # Лимит товаров из .env или без ограничений
 YANDEX_DISK_FOLDER_PATH = os.environ.get('YANDEX_DISK_FOLDER_PATH', '/avito_excel/')  # Путь к папке на Яндекс.Диске
 YANDEX_DISK_IMAGES_FOLDER_PATH = os.environ.get('YANDEX_DISK_IMAGES_FOLDER_PATH', '/images/')  # Путь к папке изображений на Яндекс.Диске
